@@ -15,6 +15,7 @@ const statusConfig: Record<string, { color: string; bgColor: string; icon: React
   healthy: { color: 'text-green-700', bgColor: 'bg-green-100', icon: <CheckCircle className="h-4 w-4" />, label: '健康' },
   warning: { color: 'text-yellow-700', bgColor: 'bg-yellow-100', icon: <AlertTriangle className="h-4 w-4" />, label: '警告' },
   breached: { color: 'text-red-700', bgColor: 'bg-red-100', icon: <AlertCircle className="h-4 w-4" />, label: '违约' },
+  no_data: { color: 'text-gray-500', bgColor: 'bg-gray-100', icon: <Clock className="h-4 w-4" />, label: '暂无数据' },
 };
 
 const targetTypeLabels: Record<string, string> = {
@@ -27,6 +28,13 @@ const windowTypeLabels: Record<string, string> = {
   rolling_7d: '滚动7天',
   rolling_30d: '滚动30天',
   calendar_month: '日历月',
+};
+
+const budgetUnitLabels: Record<string, string> = {
+  minutes: '分钟',
+  hours: '小时',
+  分钟: '分钟',
+  小时: '小时',
 };
 
 function CircularProgress({ percentage, size = 80, strokeWidth = 6 }: { percentage: number; size?: number; strokeWidth?: number }) {
@@ -146,8 +154,10 @@ export default function SLOPage() {
   }, []);
 
   useEffect(() => {
-    previewBudget(formState.target_value, formState.window_type);
-  }, [formState.target_value, formState.window_type, previewBudget]);
+    if (showForm) {
+      previewBudget(formState.target_value, formState.window_type);
+    }
+  }, [showForm, formState.target_value, formState.window_type, previewBudget]);
 
   const handleSave = async () => {
     const decimalValue = formState.target_value / 100;
@@ -231,6 +241,21 @@ export default function SLOPage() {
     setShowForm(false);
   };
 
+  const openCreateForm = () => {
+    setFormState({
+      name: '',
+      service_name: '',
+      target_type: 'availability',
+      target_value: 99.9,
+      window_type: 'rolling_30d',
+      latency_threshold_ms: 200,
+      target_qps: 100,
+      enabled: true,
+    });
+    setEditingSLO(null);
+    setShowForm(true);
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -243,7 +268,7 @@ export default function SLOPage() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">SLO 管理</h1>
-        <Button onClick={() => { resetForm(); setShowForm(true); }}>
+        <Button onClick={openCreateForm}>
           <Plus className="h-4 w-4 mr-2" />
           新建SLO
         </Button>
@@ -452,7 +477,7 @@ export default function SLOPage() {
                     <div>
                       <p className="text-xs text-gray-500">错误预算</p>
                       <p className="text-sm font-medium">
-                        允许 {detail.definition.budget_total}{detail.definition.budget_unit}不可用
+                        允许 {detail.definition.budget_total}{budgetUnitLabels[detail.definition.budget_unit] || detail.definition.budget_unit}不可用
                       </p>
                     </div>
                     <div>

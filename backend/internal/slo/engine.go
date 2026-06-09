@@ -161,7 +161,11 @@ func (e *Engine) calculateSLO(ctx context.Context, def *model.SLODefinition) err
 		measurementIntervals := int64(windowEnd.Sub(windowStart) / time.Minute)
 		if measurementIntervals <= 0 {
 			currentMeasurement = 1.0
-			totalEvents = measurementIntervals
+			totalEvents = 0
+			badEvents = 0
+		} else if actualQPS == 0 {
+			currentMeasurement = 1.0
+			totalEvents = 0
 			badEvents = 0
 		} else {
 			totalEvents = measurementIntervals
@@ -189,6 +193,8 @@ func (e *Engine) calculateSLO(ctx context.Context, def *model.SLODefinition) err
 		}
 	}
 
+	hasData := totalEvents > 0
+
 	snap := &model.SLOBudgetSnapshot{
 		SLOID:                 def.ID,
 		WindowStart:           windowStart,
@@ -200,6 +206,11 @@ func (e *Engine) calculateSLO(ctx context.Context, def *model.SLODefinition) err
 		CurrentMeasurement:    currentMeasurement,
 		Grain:                 "5min",
 		CalculatedAt:          time.Now(),
+	}
+
+	if !hasData {
+		snap.ErrorBudgetRemainingPct = 100.0
+		snap.CurrentMeasurement = 1.0
 	}
 
 	if err := e.store.WriteSLOBudgetSnapshot(ctx, snap); err != nil {
@@ -399,6 +410,10 @@ func GetSLOStatus(remainingBudgetPct float64) string {
 		return "warning"
 	}
 	return "healthy"
+}
+
+func GetSLOStatusNoData() string {
+	return "no_data"
 }
 
 func EstimateExhaustTime(remainingBudgetPct float64, currentSnap *model.SLOBudgetSnapshot, windowType string) *time.Time {

@@ -906,10 +906,12 @@ func (h *Handler) GetSLOs(c *gin.Context) {
 	for _, def := range defs {
 		snap, _ := h.store.GetLatestSLOBudgetSnapshot(c.Request.Context(), def.ID)
 		remainingPct := 100.0
-		status := "healthy"
+		status := slo.GetSLOStatusNoData()
 		if snap != nil {
 			remainingPct = snap.ErrorBudgetRemainingPct
-			status = slo.GetSLOStatus(remainingPct)
+			if snap.TotalEvents > 0 {
+				status = slo.GetSLOStatus(remainingPct)
+			}
 		}
 		overviews = append(overviews, &model.SLOOverview{
 			ID:                 def.ID,
@@ -942,10 +944,13 @@ func (h *Handler) GetSLO(c *gin.Context) {
 
 	snap, _ := h.store.GetLatestSLOBudgetSnapshot(c.Request.Context(), id)
 	remainingPct := 100.0
+	status := slo.GetSLOStatusNoData()
 	if snap != nil {
 		remainingPct = snap.ErrorBudgetRemainingPct
+		if snap.TotalEvents > 0 {
+			status = slo.GetSLOStatus(remainingPct)
+		}
 	}
-	status := slo.GetSLOStatus(remainingPct)
 	exhaustAt := slo.EstimateExhaustTime(remainingPct, snap, def.WindowType)
 
 	detail := &model.SLODetail{
