@@ -1608,38 +1608,54 @@ func (s *PostgresStore) GetSLODailyAggregates(ctx context.Context, sloID int, st
 }
 
 func (s *PostgresStore) GetSLOBurnRate1h(ctx context.Context, sloID int) (float64, error) {
-	var totalEvents, badEvents int64
 	def, err := s.GetSLODefinition(ctx, sloID)
 	if err != nil || def == nil {
 		return 0, err
 	}
-	windowStart := time.Now().Add(-1 * time.Hour)
-	windowEnd := time.Now()
 
-	switch def.TargetType {
-	case "availability":
-		totalEvents, badEvents, err = s.GetSLOSpanCounts(ctx, def.ServiceName, windowStart, windowEnd)
-	case "latency":
-		threshold := float64(200)
-		if def.LatencyThresholdMs != nil {
-			threshold = *def.LatencyThresholdMs
-		}
-		totalEvents, badEvents, err = s.GetSLOSlowSpanCounts(ctx, def.ServiceName, threshold, windowStart, windowEnd)
-	default:
-		return 0, nil
-	}
-	if err != nil {
+	recentSnap, err := s.GetLatestSLOBudgetSnapshot(ctx, sloID)
+	if err != nil || recentSnap == nil {
 		return 0, err
 	}
-	if totalEvents == 0 {
+
+	oneHourAgo := time.Now().Add(-1 * time.Hour)
+	var oldSnap model.SLOBudgetSnapshot
+	err = s.pool.QueryRow(ctx, `
+		SELECT id, slo_id, window_start, window_end, total_events, bad_events,
+			error_budget_consumed, error_budget_remaining_pct,
+			current_measurement, grain, calculated_at
+		FROM slo_budget_snapshots
+		WHERE slo_id = $1 AND calculated_at <= $2
+		ORDER BY calculated_at DESC
+		LIMIT 1
+	`, sloID, oneHourAgo).Scan(
+		&oldSnap.ID, &oldSnap.SLOID, &oldSnap.WindowStart, &oldSnap.WindowEnd,
+		&oldSnap.TotalEvents, &oldSnap.BadEvents,
+		&oldSnap.ErrorBudgetConsumed, &oldSnap.ErrorBudgetRemainingPct,
+		&oldSnap.CurrentMeasurement, &oldSnap.Grain, &oldSnap.CalculatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	consumedDelta := recentSnap.ErrorBudgetConsumed - oldSnap.ErrorBudgetConsumed
+	if consumedDelta <= 0 {
 		return 0, nil
 	}
+
+	timeDeltaHours := recentSnap.CalculatedAt.Sub(oldSnap.CalculatedAt).Hours()
+	if timeDeltaHours <= 0 {
+		return 0, nil
+	}
+
 	errorBudgetPct := 1.0 - def.TargetValue
 	if errorBudgetPct <= 0 {
 		return 0, nil
 	}
-	actualErrorRate := float64(badEvents) / float64(totalEvents)
-	windowHours := 1.0
+
 	var totalWindowHours float64
 	switch def.WindowType {
 	case "rolling_7d":
@@ -1651,10 +1667,12 @@ func (s *PostgresStore) GetSLOBurnRate1h(ctx context.Context, sloID int) (float6
 	default:
 		totalWindowHours = 30 * 24
 	}
-	allowedRate := errorBudgetPct / totalWindowHours
-	actualRate := actualErrorRate / windowHours
+
+	actualRate := (consumedDelta / 100.0) / timeDeltaHours
+	allowedRate := 1.0 / totalWindowHours
 	if allowedRate == 0 {
 		return 0, nil
 	}
+
 	return actualRate / allowedRate, nil
 }

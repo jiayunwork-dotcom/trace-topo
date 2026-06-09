@@ -337,6 +337,7 @@ export default function SLOPage() {
     if (!compareResult || compareResult.series.length === 0) return [];
     const timeMap = new Map<string, Record<string, number>>();
     for (const s of compareResult.series) {
+      if (!s.points) continue;
       for (const p of s.points) {
         const key = format(new Date(p.timestamp), 'MM-dd HH:mm');
         const existing = timeMap.get(key) || {};
@@ -847,20 +848,26 @@ export default function SLOPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">开始日期</label>
-                    <Input
+                    <input
                       type="date"
                       value={exportConfig.start_date}
+                      max={exportConfig.end_date || format(new Date(), 'yyyy-MM-dd')}
                       onChange={(e) => setExportConfig((p) => ({ ...p, start_date: e.target.value }))}
+                      className="flex h-10 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:border-gray-700 dark:bg-gray-800 dark:text-white"
                     />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">结束日期</label>
-                    <Input
+                    <input
                       type="date"
                       value={exportConfig.end_date}
+                      min={exportConfig.start_date || undefined}
+                      max={format(new Date(), 'yyyy-MM-dd')}
                       onChange={(e) => setExportConfig((p) => ({ ...p, end_date: e.target.value }))}
+                      className="flex h-10 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:border-gray-700 dark:bg-gray-800 dark:text-white"
                     />
                   </div>
+                  <p className="col-span-2 text-xs text-gray-400">日期格式: YYYY-MM-DD</p>
                 </div>
               )}
 

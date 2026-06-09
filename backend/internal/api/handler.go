@@ -1292,7 +1292,7 @@ func (h *Handler) CompareSLOTrends(c *gin.Context) {
 			continue
 		}
 
-		snaps, err := h.store.GetSLOBudgetSnapshots(c.Request.Context(), sloID, "hourly", 168)
+		snaps, err := h.store.GetSLOBudgetSnapshots(c.Request.Context(), sloID, "5min", 2016)
 		if err != nil {
 			logrus.Errorf("Get SLO budget snapshots for compare error: %v", err)
 			continue
@@ -1308,7 +1308,7 @@ func (h *Handler) CompareSLOTrends(c *gin.Context) {
 			windowDuration = 30 * 24 * time.Hour
 		}
 
-		var points []*model.SLOBudgetTrendPoint
+		points := make([]*model.SLOBudgetTrendPoint, 0)
 		for i := len(snaps) - 1; i >= 0; i-- {
 			snap := snaps[i]
 			elapsed := snap.CalculatedAt.Sub(snap.WindowStart)
