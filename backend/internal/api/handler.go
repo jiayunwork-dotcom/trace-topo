@@ -577,6 +577,23 @@ func (h *Handler) CreateAlertRule(c *gin.Context) {
 		return
 	}
 
+	if rule.Type == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "type is required"})
+		return
+	}
+
+	if rule.Severity == "" {
+		rule.Severity = "warning"
+	}
+
+	if rule.Operator == "" {
+		rule.Operator = ">"
+	}
+
+	if rule.Metric == "" {
+		rule.Metric = "error_rate"
+	}
+
 	created, err := h.store.CreateAlertRule(c.Request.Context(), &rule)
 	if err != nil {
 		logrus.Errorf("Create alert rule error: %v", err)
@@ -599,6 +616,23 @@ func (h *Handler) UpdateAlertRule(c *gin.Context) {
 		return
 	}
 	rule.ID = id
+
+	if rule.Type == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "type is required"})
+		return
+	}
+
+	if rule.Severity == "" {
+		rule.Severity = "warning"
+	}
+
+	if rule.Operator == "" {
+		rule.Operator = ">"
+	}
+
+	if rule.Metric == "" {
+		rule.Metric = "error_rate"
+	}
 
 	updated, err := h.store.UpdateAlertRule(c.Request.Context(), &rule)
 	if err != nil {

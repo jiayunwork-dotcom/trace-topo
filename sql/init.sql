@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS alert_rules (
     severity TEXT NOT NULL DEFAULT 'warning' CHECK (severity IN ('info', 'warning', 'critical')),
     service_name TEXT,
     metric TEXT NOT NULL,
-    operator TEXT NOT NULL DEFAULT '>' CHECK (operator IN ('>', '>=', '<', '<=', '==', '!=')),
+    operator TEXT NOT NULL DEFAULT '>' CHECK (type != 'threshold' OR operator IN ('>', '>=', '<', '<=', '==', '!=')),
     threshold DOUBLE PRECISION NOT NULL,
     duration_seconds INTEGER NOT NULL DEFAULT 0,
     spike_window_minutes INTEGER NOT NULL DEFAULT 60,

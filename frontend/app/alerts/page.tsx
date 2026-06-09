@@ -84,11 +84,18 @@ export default function AlertsPage() {
   }, [tab]);
 
   const handleSaveRule = async () => {
+    const payload: Partial<AlertRule> = {
+      ...formState,
+      operator: formState.operator || '>',
+      severity: formState.severity || 'warning',
+      metric: formState.metric || 'error_rate',
+    };
+
     try {
       if (editingRule) {
-        await alertApi.updateRule(editingRule.id, formState);
+        await alertApi.updateRule(editingRule.id, payload);
       } else {
-        await alertApi.createRule(formState);
+        await alertApi.createRule(payload);
       }
       setShowRuleForm(false);
       setEditingRule(null);
