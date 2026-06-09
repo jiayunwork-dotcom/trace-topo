@@ -1166,3 +1166,374 @@ func (s *PostgresStore) UpdateRuleLastTriggered(ctx context.Context, ruleID int,
 	`, ruleID, triggeredAt)
 	return err
 }
+
+func (s *PostgresStore) GetSLODefinitions(ctx context.Context) ([]*model.SLODefinition, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, service_name, target_type, target_value, window_type,
+			budget_total, budget_unit, latency_threshold_ms, target_qps,
+			burn_rate_rules, alert_rule_id, enabled, created_at, updated_at
+		FROM slo_definitions
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var defs []*model.SLODefinition
+	for rows.Next() {
+		var d model.SLODefinition
+		var burnRateJSON []byte
+		err := rows.Scan(
+			&d.ID, &d.Name, &d.ServiceName, &d.TargetType, &d.TargetValue, &d.WindowType,
+			&d.BudgetTotal, &d.BudgetUnit, &d.LatencyThresholdMs, &d.TargetQPS,
+			&burnRateJSON, &d.AlertRuleID, &d.Enabled, &d.CreatedAt, &d.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if len(burnRateJSON) > 0 {
+			json.Unmarshal(burnRateJSON, &d.BurnRateRules)
+		}
+		defs = append(defs, &d)
+	}
+	return defs, rows.Err()
+}
+
+func (s *PostgresStore) GetSLODefinition(ctx context.Context, id int) (*model.SLODefinition, error) {
+	var d model.SLODefinition
+	var burnRateJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, name, service_name, target_type, target_value, window_type,
+			budget_total, budget_unit, latency_threshold_ms, target_qps,
+			burn_rate_rules, alert_rule_id, enabled, created_at, updated_at
+		FROM slo_definitions
+		WHERE id = $1
+	`, id).Scan(
+		&d.ID, &d.Name, &d.ServiceName, &d.TargetType, &d.TargetValue, &d.WindowType,
+		&d.BudgetTotal, &d.BudgetUnit, &d.LatencyThresholdMs, &d.TargetQPS,
+		&burnRateJSON, &d.AlertRuleID, &d.Enabled, &d.CreatedAt, &d.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if len(burnRateJSON) > 0 {
+		json.Unmarshal(burnRateJSON, &d.BurnRateRules)
+	}
+	return &d, nil
+}
+
+func (s *PostgresStore) CreateSLODefinition(ctx context.Context, def *model.SLODefinition) (*model.SLODefinition, error) {
+	burnRateJSON, _ := json.Marshal(def.BurnRateRules)
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO slo_definitions (
+			name, service_name, target_type, target_value, window_type,
+			budget_total, budget_unit, latency_threshold_ms, target_qps,
+			burn_rate_rules, enabled
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING id, created_at, updated_at
+	`,
+		def.Name, def.ServiceName, def.TargetType, def.TargetValue, def.WindowType,
+		def.BudgetTotal, def.BudgetUnit, def.LatencyThresholdMs, def.TargetQPS,
+		burnRateJSON, def.Enabled,
+	).Scan(&def.ID, &def.CreatedAt, &def.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return def, nil
+}
+
+func (s *PostgresStore) UpdateSLODefinition(ctx context.Context, def *model.SLODefinition) (*model.SLODefinition, error) {
+	burnRateJSON, _ := json.Marshal(def.BurnRateRules)
+	err := s.pool.QueryRow(ctx, `
+		UPDATE slo_definitions SET
+			name = $2, service_name = $3, target_type = $4, target_value = $5,
+			window_type = $6, budget_total = $7, budget_unit = $8,
+			latency_threshold_ms = $9, target_qps = $10,
+			burn_rate_rules = $11, alert_rule_id = $12, enabled = $13, updated_at = NOW()
+		WHERE id = $1
+		RETURNING updated_at
+	`,
+		def.ID,
+		def.Name, def.ServiceName, def.TargetType, def.TargetValue, def.WindowType,
+		def.BudgetTotal, def.BudgetUnit, def.LatencyThresholdMs, def.TargetQPS,
+		burnRateJSON, def.AlertRuleID, def.Enabled,
+	).Scan(&def.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return def, nil
+}
+
+func (s *PostgresStore) DeleteSLODefinition(ctx context.Context, id int) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM slo_definitions WHERE id = $1`, id)
+	return err
+}
+
+func (s *PostgresStore) WriteSLOBudgetSnapshot(ctx context.Context, snap *model.SLOBudgetSnapshot) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO slo_budget_snapshots (
+			slo_id, window_start, window_end, total_events, bad_events,
+			error_budget_consumed, error_budget_remaining_pct,
+			current_measurement, grain, calculated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (slo_id, grain, calculated_at) DO NOTHING
+	`, snap.SLOID, snap.WindowStart, snap.WindowEnd, snap.TotalEvents, snap.BadEvents,
+		snap.ErrorBudgetConsumed, snap.ErrorBudgetRemainingPct,
+		snap.CurrentMeasurement, snap.Grain, snap.CalculatedAt)
+	return err
+}
+
+func (s *PostgresStore) GetSLOBudgetSnapshots(ctx context.Context, sloID int, grain string, limit int) ([]*model.SLOBudgetSnapshot, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, slo_id, window_start, window_end, total_events, bad_events,
+			error_budget_consumed, error_budget_remaining_pct,
+			current_measurement, grain, calculated_at
+		FROM slo_budget_snapshots
+		WHERE slo_id = $1 AND grain = $2
+		ORDER BY calculated_at DESC
+		LIMIT $3
+	`, sloID, grain, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var snaps []*model.SLOBudgetSnapshot
+	for rows.Next() {
+		var snap model.SLOBudgetSnapshot
+		err := rows.Scan(
+			&snap.ID, &snap.SLOID, &snap.WindowStart, &snap.WindowEnd,
+			&snap.TotalEvents, &snap.BadEvents,
+			&snap.ErrorBudgetConsumed, &snap.ErrorBudgetRemainingPct,
+			&snap.CurrentMeasurement, &snap.Grain, &snap.CalculatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		snaps = append(snaps, &snap)
+	}
+	return snaps, rows.Err()
+}
+
+func (s *PostgresStore) GetLatestSLOBudgetSnapshot(ctx context.Context, sloID int) (*model.SLOBudgetSnapshot, error) {
+	var snap model.SLOBudgetSnapshot
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, slo_id, window_start, window_end, total_events, bad_events,
+			error_budget_consumed, error_budget_remaining_pct,
+			current_measurement, grain, calculated_at
+		FROM slo_budget_snapshots
+		WHERE slo_id = $1
+		ORDER BY calculated_at DESC
+		LIMIT 1
+	`, sloID).Scan(
+		&snap.ID, &snap.SLOID, &snap.WindowStart, &snap.WindowEnd,
+		&snap.TotalEvents, &snap.BadEvents,
+		&snap.ErrorBudgetConsumed, &snap.ErrorBudgetRemainingPct,
+		&snap.CurrentMeasurement, &snap.Grain, &snap.CalculatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &snap, nil
+}
+
+func (s *PostgresStore) GetSLOSpanCounts(ctx context.Context, serviceName string, windowStart, windowEnd time.Time) (total int64, errors int64, err error) {
+	tables, err := s.getTablesInRange(ctx, windowStart, windowEnd)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(tables) == 0 {
+		return 0, 0, nil
+	}
+
+	var queries []string
+	var args []interface{}
+	argIdx := 1
+
+	for _, table := range tables {
+		queries = append(queries, fmt.Sprintf(`
+			SELECT COUNT(*) as total,
+				SUM(CASE WHEN status_code != 0 THEN 1 ELSE 0 END)::bigint as errors
+			FROM %s
+			WHERE service_name = $%d AND start_time >= $%d AND start_time < $%d
+		`, pgx.Identifier{table}.Sanitize(), argIdx, argIdx+1, argIdx+2))
+		args = append(args, serviceName, windowStart, windowEnd)
+		argIdx += 3
+	}
+
+	query := strings.Join(queries, " UNION ALL ")
+	subRows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer subRows.Close()
+
+	for subRows.Next() {
+		var t, e int64
+		if err := subRows.Scan(&t, &e); err != nil {
+			return 0, 0, err
+		}
+		total += t
+		errors += e
+	}
+	return total, errors, subRows.Err()
+}
+
+func (s *PostgresStore) GetSLOSlowSpanCounts(ctx context.Context, serviceName string, thresholdMs float64, windowStart, windowEnd time.Time) (total int64, slow int64, err error) {
+	tables, err := s.getTablesInRange(ctx, windowStart, windowEnd)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(tables) == 0 {
+		return 0, 0, nil
+	}
+
+	var queries []string
+	var args []interface{}
+	argIdx := 1
+
+	for _, table := range tables {
+		queries = append(queries, fmt.Sprintf(`
+			SELECT COUNT(*) as total,
+				SUM(CASE WHEN duration_ms > $%d THEN 1 ELSE 0 END)::bigint as slow
+			FROM %s
+			WHERE service_name = $%d AND start_time >= $%d AND start_time < $%d
+		`, argIdx, pgx.Identifier{table}.Sanitize(), argIdx+1, argIdx+2, argIdx+3))
+		args = append(args, int64(thresholdMs), serviceName, windowStart, windowEnd)
+		argIdx += 4
+	}
+
+	query := strings.Join(queries, " UNION ALL ")
+	subRows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer subRows.Close()
+
+	for subRows.Next() {
+		var t, sl int64
+		if err := subRows.Scan(&t, &sl); err != nil {
+			return 0, 0, err
+		}
+		total += t
+		slow += sl
+	}
+	return total, slow, subRows.Err()
+}
+
+func (s *PostgresStore) GetSLOServiceQPS(ctx context.Context, serviceName string, windowStart, windowEnd time.Time) (float64, error) {
+	tables, err := s.getTablesInRange(ctx, windowStart, windowEnd)
+	if err != nil {
+		return 0, err
+	}
+	if len(tables) == 0 {
+		return 0, nil
+	}
+
+	var queries []string
+	var args []interface{}
+	argIdx := 1
+
+	for _, table := range tables {
+		queries = append(queries, fmt.Sprintf(`
+			SELECT COUNT(*) FROM %s
+			WHERE service_name = $%d AND start_time >= $%d AND start_time < $%d
+		`, pgx.Identifier{table}.Sanitize(), argIdx, argIdx+1, argIdx+2))
+		args = append(args, serviceName, windowStart, windowEnd)
+		argIdx += 3
+	}
+
+	query := strings.Join(queries, " UNION ALL ")
+	subRows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer subRows.Close()
+
+	var total int64
+	for subRows.Next() {
+		var c int64
+		if err := subRows.Scan(&c); err != nil {
+			return 0, err
+		}
+		total += c
+	}
+
+	durationSecs := windowEnd.Sub(windowStart).Seconds()
+	if durationSecs <= 0 {
+		return 0, nil
+	}
+	return float64(total) / durationSecs, nil
+}
+
+func (s *PostgresStore) GetSLOBurnRateAlerts(ctx context.Context, sloID int, limit int) ([]*model.SLOBurnRateAlert, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, slo_id, window_minutes, burn_rate, threshold, severity,
+			alert_event_id, fired_at, resolved_at
+		FROM slo_burn_rate_alerts
+		WHERE slo_id = $1
+		ORDER BY fired_at DESC
+		LIMIT $2
+	`, sloID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var alerts []*model.SLOBurnRateAlert
+	for rows.Next() {
+		var a model.SLOBurnRateAlert
+		err := rows.Scan(
+			&a.ID, &a.SLOID, &a.WindowMinutes, &a.BurnRate, &a.Threshold,
+			&a.Severity, &a.AlertEventID, &a.FiredAt, &a.ResolvedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		alerts = append(alerts, &a)
+	}
+	return alerts, rows.Err()
+}
+
+func (s *PostgresStore) CreateSLOBurnRateAlert(ctx context.Context, a *model.SLOBurnRateAlert) (*model.SLOBurnRateAlert, error) {
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO slo_burn_rate_alerts (
+			slo_id, window_minutes, burn_rate, threshold, severity,
+			alert_event_id, fired_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id
+	`, a.SLOID, a.WindowMinutes, a.BurnRate, a.Threshold, a.Severity,
+		a.AlertEventID, a.FiredAt,
+	).Scan(&a.ID)
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+func (s *PostgresStore) ResolveSLOBurnRateAlerts(ctx context.Context, sloID int) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE slo_burn_rate_alerts
+		SET resolved_at = NOW()
+		WHERE slo_id = $1 AND resolved_at IS NULL
+	`, sloID)
+	return err
+}
+
+func (s *PostgresStore) UpdateSLOAlertRuleID(ctx context.Context, sloID int, alertRuleID int) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE slo_definitions SET alert_rule_id = $2, updated_at = NOW()
+		WHERE id = $1
+	`, sloID, alertRuleID)
+	return err
+}

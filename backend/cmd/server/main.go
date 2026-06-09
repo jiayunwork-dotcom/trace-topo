@@ -15,6 +15,7 @@ import (
 	"trace-topo/internal/config"
 	"trace-topo/internal/health"
 	"trace-topo/internal/sampling"
+	"trace-topo/internal/slo"
 	"trace-topo/internal/storage"
 	"trace-topo/internal/topology"
 	"trace-topo/internal/trace"
@@ -54,6 +55,9 @@ func main() {
 
 	alertEngine := alert.NewEngine(store, topologyDiscoverer)
 	alertEngine.Start(ctx)
+
+	sloEngine := slo.NewEngine(store)
+	sloEngine.Start(ctx)
 
 	grpcServer := grpcserver.NewTraceReceiverServer(assembler)
 	if err := grpcServer.Start(ctx); err != nil {

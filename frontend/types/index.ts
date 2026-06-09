@@ -235,3 +235,84 @@ export interface TraceComparison {
   only_in_b: SpanDiffEntry[];
   duration_diff_ms: number;
 }
+
+export interface BurnRateRule {
+  window_minutes: number;
+  threshold: number;
+  severity: 'warning' | 'critical';
+}
+
+export interface SLODefinition {
+  id: number;
+  name: string;
+  service_name: string;
+  target_type: 'availability' | 'latency' | 'throughput';
+  target_value: number;
+  window_type: 'rolling_7d' | 'rolling_30d' | 'calendar_month';
+  budget_total: number;
+  budget_unit: string;
+  latency_threshold_ms?: number;
+  target_qps?: number;
+  burn_rate_rules: BurnRateRule[];
+  alert_rule_id?: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SLOBudgetSnapshot {
+  id: number;
+  slo_id: number;
+  window_start: string;
+  window_end: string;
+  total_events: number;
+  bad_events: number;
+  error_budget_consumed: number;
+  error_budget_remaining_pct: number;
+  current_measurement: number;
+  grain: string;
+  calculated_at: string;
+}
+
+export interface SLOBurnRateAlert {
+  id: number;
+  slo_id: number;
+  window_minutes: number;
+  burn_rate: number;
+  threshold: number;
+  severity: 'warning' | 'critical';
+  alert_event_id?: number;
+  fired_at: string;
+  resolved_at?: string;
+}
+
+export interface SLODetail {
+  definition: SLODefinition;
+  current_snapshot: SLOBudgetSnapshot | null;
+  remaining_budget_pct: number;
+  estimated_exhaust_at?: string;
+  status: 'healthy' | 'warning' | 'breached';
+}
+
+export interface SLOOverview {
+  id: number;
+  name: string;
+  service_name: string;
+  target_type: 'availability' | 'latency' | 'throughput';
+  target_value: number;
+  window_type: 'rolling_7d' | 'rolling_30d' | 'calendar_month';
+  remaining_budget_pct: number;
+  status: 'healthy' | 'warning' | 'breached';
+}
+
+export interface SLOBudgetTrendPoint {
+  timestamp: string;
+  error_budget_remaining_pct: number;
+  ideal_budget_remaining_pct: number;
+}
+
+export interface BudgetPreviewResult {
+  budget_absolute: number;
+  budget_unit: string;
+  description: string;
+}

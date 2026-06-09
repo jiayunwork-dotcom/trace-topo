@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"trace-topo/internal/config"
 	"trace-topo/internal/model"
+	"trace-topo/internal/slo"
 )
 
 type Store interface {
@@ -36,6 +38,14 @@ type Store interface {
 	GetAlertEvents(ctx context.Context, ruleID *int, serviceName string, limit, offset int) ([]*model.AlertEvent, int64, error)
 	GetAlertEvent(ctx context.Context, id int) (*model.AlertEvent, error)
 	AcknowledgeAlertEvent(ctx context.Context, id int) error
+	GetSLODefinitions(ctx context.Context) ([]*model.SLODefinition, error)
+	GetSLODefinition(ctx context.Context, id int) (*model.SLODefinition, error)
+	CreateSLODefinition(ctx context.Context, def *model.SLODefinition) (*model.SLODefinition, error)
+	UpdateSLODefinition(ctx context.Context, def *model.SLODefinition) (*model.SLODefinition, error)
+	DeleteSLODefinition(ctx context.Context, id int) error
+	GetSLOBudgetSnapshots(ctx context.Context, sloID int, grain string, limit int) ([]*model.SLOBudgetSnapshot, error)
+	GetLatestSLOBudgetSnapshot(ctx context.Context, sloID int) (*model.SLOBudgetSnapshot, error)
+	GetSLOBurnRateAlerts(ctx context.Context, sloID int, limit int) ([]*model.SLOBurnRateAlert, error)
 }
 
 type TopologyProvider interface {
@@ -144,6 +154,18 @@ func (h *Handler) SetupRouter() *gin.Engine {
 			alerts.GET("/events", h.GetAlertEvents)
 			alerts.GET("/events/:id", h.GetAlertEvent)
 			alerts.PUT("/events/:id/acknowledge", h.AcknowledgeAlertEvent)
+		}
+
+		slos := api.Group("/slos")
+		{
+			slos.GET("", h.GetSLOs)
+			slos.GET("/:id", h.GetSLO)
+			slos.POST("", h.CreateSLO)
+			slos.PUT("/:id", h.UpdateSLO)
+			slos.DELETE("/:id", h.DeleteSLO)
+			slos.GET("/:id/trend", h.GetSLOTrend)
+			slos.GET("/:id/burn-alerts", h.GetSLOBurnAlerts)
+			slos.POST("/calculate-budget", h.CalculateBudgetPreview)
 		}
 
 		api.POST("/traces/compare", h.CompareTraces)
@@ -870,4 +892,260 @@ func buildTraceComparison(summaryA, summaryB *model.TraceSummary, spansA, spansB
 		OnlyInB:      onlyInB,
 		DurationDiff: summaryB.TotalDuration - summaryA.TotalDuration,
 	}
+}
+
+func (h *Handler) GetSLOs(c *gin.Context) {
+	defs, err := h.store.GetSLODefinitions(c.Request.Context())
+	if err != nil {
+		logrus.Errorf("Get SLO definitions error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var overviews []*model.SLOOverview
+	for _, def := range defs {
+		snap, _ := h.store.GetLatestSLOBudgetSnapshot(c.Request.Context(), def.ID)
+		remainingPct := 100.0
+		status := "healthy"
+		if snap != nil {
+			remainingPct = snap.ErrorBudgetRemainingPct
+			status = slo.GetSLOStatus(remainingPct)
+		}
+		overviews = append(overviews, &model.SLOOverview{
+			ID:                 def.ID,
+			Name:               def.Name,
+			ServiceName:        def.ServiceName,
+			TargetType:         def.TargetType,
+			TargetValue:        def.TargetValue,
+			WindowType:         def.WindowType,
+			RemainingBudgetPct: remainingPct,
+			Status:             status,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": overviews})
+}
+
+func (h *Handler) GetSLO(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid SLO id"})
+		return
+	}
+
+	def, err := h.store.GetSLODefinition(c.Request.Context(), id)
+	if err != nil {
+		logrus.Errorf("Get SLO definition error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	snap, _ := h.store.GetLatestSLOBudgetSnapshot(c.Request.Context(), id)
+	remainingPct := 100.0
+	if snap != nil {
+		remainingPct = snap.ErrorBudgetRemainingPct
+	}
+	status := slo.GetSLOStatus(remainingPct)
+	exhaustAt := slo.EstimateExhaustTime(remainingPct, snap, def.WindowType)
+
+	detail := &model.SLODetail{
+		Definition:         def,
+		CurrentSnapshot:    snap,
+		RemainingBudgetPct: remainingPct,
+		EstimatedExhaustAt: exhaustAt,
+		Status:             status,
+	}
+	c.JSON(http.StatusOK, detail)
+}
+
+func (h *Handler) CreateSLO(c *gin.Context) {
+	var def model.SLODefinition
+	if err := c.ShouldBindJSON(&def); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if def.Name == "" || def.ServiceName == "" || def.TargetType == "" || def.WindowType == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name, service_name, target_type, and window_type are required"})
+		return
+	}
+
+	if def.TargetValue <= 0 || def.TargetValue > 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "target_value must be between 0 and 1"})
+		return
+	}
+
+	absValue, unit := slo.CalculateErrorBudgetAbsolute(def.TargetValue, def.WindowType)
+	def.BudgetTotal = absValue
+	def.BudgetUnit = unit
+
+	if len(def.BurnRateRules) == 0 {
+		def.BurnRateRules = []model.BurnRateRule{
+			{WindowMinutes: 60, Threshold: 14.0, Severity: "critical"},
+			{WindowMinutes: 360, Threshold: 6.0, Severity: "warning"},
+		}
+	}
+
+	created, err := h.store.CreateSLODefinition(c.Request.Context(), &def)
+	if err != nil {
+		logrus.Errorf("Create SLO definition error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, created)
+}
+
+func (h *Handler) UpdateSLO(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid SLO id"})
+		return
+	}
+
+	var def model.SLODefinition
+	if err := c.ShouldBindJSON(&def); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	def.ID = id
+
+	if def.TargetValue > 0 && def.TargetValue <= 1 {
+		absValue, unit := slo.CalculateErrorBudgetAbsolute(def.TargetValue, def.WindowType)
+		def.BudgetTotal = absValue
+		def.BudgetUnit = unit
+	}
+
+	updated, err := h.store.UpdateSLODefinition(c.Request.Context(), &def)
+	if err != nil {
+		logrus.Errorf("Update SLO definition error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, updated)
+}
+
+func (h *Handler) DeleteSLO(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid SLO id"})
+		return
+	}
+
+	if err := h.store.DeleteSLODefinition(c.Request.Context(), id); err != nil {
+		logrus.Errorf("Delete SLO definition error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+func (h *Handler) GetSLOTrend(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid SLO id"})
+		return
+	}
+
+	grain := c.DefaultQuery("grain", "hourly")
+	limit := 168
+	if l := c.Query("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil {
+			limit = v
+		}
+	}
+
+	snaps, err := h.store.GetSLOBudgetSnapshots(c.Request.Context(), id, grain, limit)
+	if err != nil {
+		logrus.Errorf("Get SLO budget snapshots error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	def, err := h.store.GetSLODefinition(c.Request.Context(), id)
+	if err != nil {
+		logrus.Errorf("Get SLO definition for trend error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var windowDuration time.Duration
+	switch def.WindowType {
+	case "rolling_7d":
+		windowDuration = 7 * 24 * time.Hour
+	case "rolling_30d":
+		windowDuration = 30 * 24 * time.Hour
+	case "calendar_month":
+		windowDuration = 30 * 24 * time.Hour
+	}
+
+	var trend []*model.SLOBudgetTrendPoint
+	for i := len(snaps) - 1; i >= 0; i-- {
+		snap := snaps[i]
+		elapsed := snap.CalculatedAt.Sub(snap.WindowStart)
+		var idealPct float64
+		if windowDuration > 0 && elapsed > 0 {
+			idealPct = math.Max(0, 100.0*(1.0-elapsed.Seconds()/windowDuration.Seconds()))
+		} else {
+			idealPct = 100.0
+		}
+
+		trend = append(trend, &model.SLOBudgetTrendPoint{
+			Timestamp:               snap.CalculatedAt,
+			ErrorBudgetRemainingPct: snap.ErrorBudgetRemainingPct,
+			IdealBudgetRemainingPct: idealPct,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": trend, "grain": grain})
+}
+
+func (h *Handler) GetSLOBurnAlerts(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid SLO id"})
+		return
+	}
+
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil {
+			limit = v
+		}
+	}
+
+	alerts, err := h.store.GetSLOBurnRateAlerts(c.Request.Context(), id, limit)
+	if err != nil {
+		logrus.Errorf("Get SLO burn rate alerts error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": alerts})
+}
+
+func (h *Handler) CalculateBudgetPreview(c *gin.Context) {
+	var req struct {
+		TargetValue float64 `json:"target_value"`
+		WindowType  string  `json:"window_type"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.TargetValue <= 0 || req.TargetValue > 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "target_value must be between 0 and 1"})
+		return
+	}
+	if req.WindowType == "" {
+		req.WindowType = "rolling_30d"
+	}
+
+	absValue, unit := slo.CalculateErrorBudgetAbsolute(req.TargetValue, req.WindowType)
+
+	c.JSON(http.StatusOK, gin.H{
+		"budget_absolute": absValue,
+		"budget_unit":     unit,
+		"description":     fmt.Sprintf("允许 %.2f %s不可用", absValue, unit),
+	})
 }

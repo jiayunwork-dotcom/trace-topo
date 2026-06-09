@@ -191,6 +191,81 @@ type SpanDiffEntry struct {
 	SpanID        string `json:"span_id"`
 }
 
+type BurnRateRule struct {
+	WindowMinutes int     `json:"window_minutes"`
+	Threshold     float64 `json:"threshold"`
+	Severity      string  `json:"severity"`
+}
+
+type SLODefinition struct {
+	ID               int             `json:"id"`
+	Name             string          `json:"name"`
+	ServiceName      string          `json:"service_name"`
+	TargetType       string          `json:"target_type"`
+	TargetValue      float64         `json:"target_value"`
+	WindowType       string          `json:"window_type"`
+	BudgetTotal      float64         `json:"budget_total"`
+	BudgetUnit       string          `json:"budget_unit"`
+	LatencyThresholdMs *float64      `json:"latency_threshold_ms,omitempty"`
+	TargetQPS        *float64        `json:"target_qps,omitempty"`
+	BurnRateRules    []BurnRateRule  `json:"burn_rate_rules"`
+	AlertRuleID      *int            `json:"alert_rule_id,omitempty"`
+	Enabled          bool            `json:"enabled"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
+}
+
+type SLOBudgetSnapshot struct {
+	ID                    int       `json:"id"`
+	SLOID                 int       `json:"slo_id"`
+	WindowStart           time.Time `json:"window_start"`
+	WindowEnd             time.Time `json:"window_end"`
+	TotalEvents           int64     `json:"total_events"`
+	BadEvents             int64     `json:"bad_events"`
+	ErrorBudgetConsumed   float64   `json:"error_budget_consumed"`
+	ErrorBudgetRemainingPct float64 `json:"error_budget_remaining_pct"`
+	CurrentMeasurement    float64   `json:"current_measurement"`
+	Grain                 string    `json:"grain"`
+	CalculatedAt          time.Time `json:"calculated_at"`
+}
+
+type SLOBurnRateAlert struct {
+	ID            int        `json:"id"`
+	SLOID         int        `json:"slo_id"`
+	WindowMinutes int        `json:"window_minutes"`
+	BurnRate      float64    `json:"burn_rate"`
+	Threshold     float64    `json:"threshold"`
+	Severity      string     `json:"severity"`
+	AlertEventID  *int       `json:"alert_event_id,omitempty"`
+	FiredAt       time.Time  `json:"fired_at"`
+	ResolvedAt    *time.Time `json:"resolved_at,omitempty"`
+}
+
+type SLODetail struct {
+	Definition          *SLODefinition        `json:"definition"`
+	CurrentSnapshot     *SLOBudgetSnapshot    `json:"current_snapshot"`
+	RemainingBudgetPct  float64               `json:"remaining_budget_pct"`
+	EstimatedExhaustAt  *time.Time            `json:"estimated_exhaust_at,omitempty"`
+	Status              string                `json:"status"`
+}
+
+type SLOOverview struct {
+	ID                  int      `json:"id"`
+	Name                string   `json:"name"`
+	ServiceName         string   `json:"service_name"`
+	TargetType          string   `json:"target_type"`
+	TargetValue         float64  `json:"target_value"`
+	WindowType          string   `json:"window_type"`
+	RemainingBudgetPct  float64  `json:"remaining_budget_pct"`
+	Status              string   `json:"status"`
+}
+
+type SLOBudgetTrendPoint struct {
+	Timestamp              time.Time `json:"timestamp"`
+	ErrorBudgetRemainingPct float64  `json:"error_budget_remaining_pct"`
+	IdealBudgetRemainingPct float64  `json:"ideal_budget_remaining_pct"`
+}
+
 func (s *Span) MarshalJSON() ([]byte, error) {
 	type Alias Span
 	return json.Marshal(&struct {

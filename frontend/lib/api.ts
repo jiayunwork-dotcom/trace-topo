@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type {
-  Span, SpanTreeNode, TraceSummary, SearchResponse, TopologyGraph, Metrics, TrendPoint, SamplingConfig, SearchFilters, ServiceDetail, Trace, SearchRequest, HealthScore, AlertRule, AlertEvent, TraceComparison } from '@/types';
+  Span, SpanTreeNode, TraceSummary, SearchResponse, TopologyGraph, Metrics, TrendPoint, SamplingConfig, SearchFilters, ServiceDetail, Trace, SearchRequest, HealthScore, AlertRule, AlertEvent, TraceComparison, SLOOverview, SLODetail, SLOBudgetTrendPoint, SLOBurnRateAlert, BudgetPreviewResult } from '@/types';
 
 const baseURL = process.env.NEXT_PUBLIC_API_BASE || '/api/v1';
 
@@ -139,6 +139,33 @@ export const alertApi = {
 export const compareApi = {
   compareTraces: async (traceA: string, traceB: string) => {
     return api.post<TraceComparison>('/traces/compare', { trace_a: traceA, trace_b: traceB });
+  },
+};
+
+export const sloApi = {
+  getSLOs: async () => {
+    return api.get<{ data: SLOOverview[] }>('/slos');
+  },
+  getSLO: async (id: number) => {
+    return api.get<SLODetail>(`/slos/${id}`);
+  },
+  createSLO: async (slo: Record<string, unknown>) => {
+    return api.post('/slos', slo);
+  },
+  updateSLO: async (id: number, slo: Record<string, unknown>) => {
+    return api.put(`/slos/${id}`, slo);
+  },
+  deleteSLO: async (id: number) => {
+    return api.delete(`/slos/${id}`);
+  },
+  getTrend: async (id: number, grain: '5min' | 'hourly' | 'daily' = 'hourly', limit = 168) => {
+    return api.get<{ data: SLOBudgetTrendPoint[]; grain: string }>(`/slos/${id}/trend?grain=${grain}&limit=${limit}`);
+  },
+  getBurnAlerts: async (id: number, limit = 50) => {
+    return api.get<{ data: SLOBurnRateAlert[] }>(`/slos/${id}/burn-alerts?limit=${limit}`);
+  },
+  calculateBudgetPreview: async (targetValue: number, windowType: string) => {
+    return api.post<BudgetPreviewResult>('/slos/calculate-budget', { target_value: targetValue, window_type: windowType });
   },
 };
 

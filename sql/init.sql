@@ -216,3 +216,56 @@ CREATE TABLE IF NOT EXISTS alert_events (
 CREATE INDEX IF NOT EXISTS idx_alert_events_rule ON alert_events(rule_id, fired_at DESC);
 CREATE INDEX IF NOT EXISTS idx_alert_events_fired ON alert_events(fired_at DESC);
 CREATE INDEX IF NOT EXISTS idx_alert_events_service ON alert_events(service_name, fired_at DESC);
+
+CREATE TABLE IF NOT EXISTS slo_definitions (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    service_name TEXT NOT NULL,
+    target_type TEXT NOT NULL CHECK (target_type IN ('availability', 'latency', 'throughput')),
+    target_value DOUBLE PRECISION NOT NULL,
+    window_type TEXT NOT NULL CHECK (window_type IN ('rolling_7d', 'rolling_30d', 'calendar_month')),
+    budget_total DOUBLE PRECISION NOT NULL,
+    budget_unit TEXT NOT NULL DEFAULT 'minutes',
+    latency_threshold_ms DOUBLE PRECISION,
+    target_qps DOUBLE PRECISION,
+    burn_rate_rules JSONB NOT NULL DEFAULT '[]',
+    alert_rule_id INTEGER REFERENCES alert_rules(id) ON DELETE SET NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(name, service_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_slo_definitions_service ON slo_definitions(service_name);
+
+CREATE TABLE IF NOT EXISTS slo_budget_snapshots (
+    id SERIAL PRIMARY KEY,
+    slo_id INTEGER NOT NULL REFERENCES slo_definitions(id) ON DELETE CASCADE,
+    window_start TIMESTAMP NOT NULL,
+    window_end TIMESTAMP NOT NULL,
+    total_events BIGINT NOT NULL DEFAULT 0,
+    bad_events BIGINT NOT NULL DEFAULT 0,
+    error_budget_consumed DOUBLE PRECISION NOT NULL DEFAULT 0,
+    error_budget_remaining_pct DOUBLE PRECISION NOT NULL DEFAULT 100,
+    current_measurement DOUBLE PRECISION NOT NULL DEFAULT 0,
+    grain TEXT NOT NULL CHECK (grain IN ('5min', 'hourly', 'daily')),
+    calculated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(slo_id, grain, calculated_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_slo_budget_slo ON slo_budget_snapshots(slo_id, calculated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_slo_budget_grain ON slo_budget_snapshots(slo_id, grain, calculated_at DESC);
+
+CREATE TABLE IF NOT EXISTS slo_burn_rate_alerts (
+    id SERIAL PRIMARY KEY,
+    slo_id INTEGER NOT NULL REFERENCES slo_definitions(id) ON DELETE CASCADE,
+    window_minutes INTEGER NOT NULL,
+    burn_rate DOUBLE PRECISION NOT NULL,
+    threshold DOUBLE PRECISION NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('warning', 'critical')),
+    alert_event_id INTEGER REFERENCES alert_events(id) ON DELETE SET NULL,
+    fired_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_slo_burn_rate_slo ON slo_burn_rate_alerts(slo_id, fired_at DESC);
