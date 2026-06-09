@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type {
-  Span, SpanTreeNode, TraceSummary, SearchResponse, TopologyGraph, Metrics, TrendPoint, SamplingConfig, SearchFilters, ServiceDetail, Trace, SearchRequest, HealthScore, AlertRule, AlertEvent, TraceComparison, SLOOverview, SLODetail, SLOBudgetTrendPoint, SLOBurnRateAlert, BudgetPreviewResult } from '@/types';
+  Span, SpanTreeNode, TraceSummary, SearchResponse, TopologyGraph, Metrics, TrendPoint, SamplingConfig, SearchFilters, ServiceDetail, Trace, SearchRequest, HealthScore, AlertRule, AlertEvent, TraceComparison, SLOOverview, SLODetail, SLOBudgetTrendPoint, SLOBurnRateAlert, BudgetPreviewResult, SLOCompareResult } from '@/types';
 
 const baseURL = process.env.NEXT_PUBLIC_API_BASE || '/api/v1';
 
@@ -166,6 +166,17 @@ export const sloApi = {
   },
   calculateBudgetPreview: async (targetValue: number, windowType: string) => {
     return api.post<BudgetPreviewResult>('/slos/calculate-budget', { target_value: targetValue, window_type: windowType });
+  },
+  exportReport: async (sloId: number, params: { time_range: string; format: string; start_date?: string; end_date?: string }) => {
+    const searchParams = new URLSearchParams();
+    searchParams.append('time_range', params.time_range);
+    searchParams.append('format', params.format);
+    if (params.start_date) searchParams.append('start_date', params.start_date);
+    if (params.end_date) searchParams.append('end_date', params.end_date);
+    return api.get(`/slos/${sloId}/report?${searchParams.toString()}`, { responseType: 'blob' });
+  },
+  compareTrends: async (sloIds: number[]) => {
+    return api.post<SLOCompareResult>('/slos/compare-trend', { slo_ids: sloIds });
   },
 };
 

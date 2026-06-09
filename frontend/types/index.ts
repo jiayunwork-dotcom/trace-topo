@@ -316,3 +316,47 @@ export interface BudgetPreviewResult {
   budget_unit: string;
   description: string;
 }
+
+export interface SLOComplianceReportDay {
+  date: string;
+  remaining_budget_pct: number;
+  consumed_pct: number;
+  breach_minutes: number;
+  avg_measurement: number;
+  has_data: boolean;
+}
+
+export interface SLOComplianceReportSummary {
+  avg_compliance_rate: number;
+  max_daily_consumed: number;
+  breach_days: number;
+  data_coverage: number;
+}
+
+export interface SLOComplianceReport {
+  definition: SLODefinition;
+  time_start: string;
+  time_end: string;
+  days: SLOComplianceReportDay[];
+  summary: SLOComplianceReportSummary;
+}
+
+export interface SLOCompareSeries {
+  slo_id: number;
+  slo_name: string;
+  points: SLOBudgetTrendPoint[];
+}
+
+export interface SLOCompareMetrics {
+  slo_id: number;
+  slo_name: string;
+  target_value: number;
+  current_measurement: number;
+  remaining_budget_pct: number;
+  burn_rate_1h: number;
+}
+
+export interface SLOCompareResult {
+  series: SLOCompareSeries[];
+  metrics: SLOCompareMetrics[];
+}

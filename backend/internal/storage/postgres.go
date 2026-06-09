@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -1536,4 +1537,124 @@ func (s *PostgresStore) UpdateSLOAlertRuleID(ctx context.Context, sloID int, ale
 		WHERE id = $1
 	`, sloID, alertRuleID)
 	return err
+}
+
+func (s *PostgresStore) GetSLODailyAggregates(ctx context.Context, sloID int, start, end time.Time) ([]*model.SLOComplianceReportDay, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			DATE(calculated_at) AS day,
+			AVG(error_budget_remaining_pct) AS avg_remaining_pct,
+			AVG(error_budget_consumed) AS avg_consumed_pct,
+			AVG(current_measurement) AS avg_measurement,
+			COUNT(*) AS snap_count
+		FROM slo_budget_snapshots
+		WHERE slo_id = $1 AND calculated_at >= $2 AND calculated_at < $3
+		GROUP BY DATE(calculated_at)
+		ORDER BY day ASC
+	`, sloID, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	dayMap := make(map[string]*model.SLOComplianceReportDay)
+	for rows.Next() {
+		var day time.Time
+		var avgRemaining, avgConsumed, avgMeasurement float64
+		var snapCount int
+		if err := rows.Scan(&day, &avgRemaining, &avgConsumed, &avgMeasurement, &snapCount); err != nil {
+			return nil, err
+		}
+		dateStr := day.Format("2006-01-02")
+		breachMinutes := 0.0
+		if avgRemaining <= 0 {
+			breachMinutes = 1440.0
+		} else if avgRemaining < 100 {
+			consumedFraction := avgConsumed / 100.0
+			if consumedFraction > 0 {
+				breachMinutes = consumedFraction * 1440.0
+			}
+		}
+		dayMap[dateStr] = &model.SLOComplianceReportDay{
+			Date:               dateStr,
+			RemainingBudgetPct: math.Round(avgRemaining*100) / 100,
+			ConsumedPct:        math.Round(avgConsumed*100) / 100,
+			BreachMinutes:      math.Round(breachMinutes*100) / 100,
+			AvgMeasurement:     math.Round(avgMeasurement*10000) / 10000,
+			HasData:            snapCount > 0,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var result []*model.SLOComplianceReportDay
+	for d := start.Truncate(24 * time.Hour); d.Before(end); d = d.AddDate(0, 0, 1) {
+		dateStr := d.Format("2006-01-02")
+		if dayData, ok := dayMap[dateStr]; ok {
+			result = append(result, dayData)
+		} else {
+			result = append(result, &model.SLOComplianceReportDay{
+				Date:               dateStr,
+				RemainingBudgetPct: 0,
+				ConsumedPct:        0,
+				BreachMinutes:      0,
+				AvgMeasurement:     0,
+				HasData:            false,
+			})
+		}
+	}
+	return result, nil
+}
+
+func (s *PostgresStore) GetSLOBurnRate1h(ctx context.Context, sloID int) (float64, error) {
+	var totalEvents, badEvents int64
+	def, err := s.GetSLODefinition(ctx, sloID)
+	if err != nil || def == nil {
+		return 0, err
+	}
+	windowStart := time.Now().Add(-1 * time.Hour)
+	windowEnd := time.Now()
+
+	switch def.TargetType {
+	case "availability":
+		totalEvents, badEvents, err = s.GetSLOSpanCounts(ctx, def.ServiceName, windowStart, windowEnd)
+	case "latency":
+		threshold := float64(200)
+		if def.LatencyThresholdMs != nil {
+			threshold = *def.LatencyThresholdMs
+		}
+		totalEvents, badEvents, err = s.GetSLOSlowSpanCounts(ctx, def.ServiceName, threshold, windowStart, windowEnd)
+	default:
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if totalEvents == 0 {
+		return 0, nil
+	}
+	errorBudgetPct := 1.0 - def.TargetValue
+	if errorBudgetPct <= 0 {
+		return 0, nil
+	}
+	actualErrorRate := float64(badEvents) / float64(totalEvents)
+	windowHours := 1.0
+	var totalWindowHours float64
+	switch def.WindowType {
+	case "rolling_7d":
+		totalWindowHours = 7 * 24
+	case "rolling_30d":
+		totalWindowHours = 30 * 24
+	case "calendar_month":
+		totalWindowHours = 30 * 24
+	default:
+		totalWindowHours = 30 * 24
+	}
+	allowedRate := errorBudgetPct / totalWindowHours
+	actualRate := actualErrorRate / windowHours
+	if allowedRate == 0 {
+		return 0, nil
+	}
+	return actualRate / allowedRate, nil
 }

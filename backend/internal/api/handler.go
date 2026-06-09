@@ -46,6 +46,8 @@ type Store interface {
 	GetSLOBudgetSnapshots(ctx context.Context, sloID int, grain string, limit int) ([]*model.SLOBudgetSnapshot, error)
 	GetLatestSLOBudgetSnapshot(ctx context.Context, sloID int) (*model.SLOBudgetSnapshot, error)
 	GetSLOBurnRateAlerts(ctx context.Context, sloID int, limit int) ([]*model.SLOBurnRateAlert, error)
+	GetSLODailyAggregates(ctx context.Context, sloID int, start, end time.Time) ([]*model.SLOComplianceReportDay, error)
+	GetSLOBurnRate1h(ctx context.Context, sloID int) (float64, error)
 }
 
 type TopologyProvider interface {
@@ -166,6 +168,8 @@ func (h *Handler) SetupRouter() *gin.Engine {
 			slos.GET("/:id/trend", h.GetSLOTrend)
 			slos.GET("/:id/burn-alerts", h.GetSLOBurnAlerts)
 			slos.POST("/calculate-budget", h.CalculateBudgetPreview)
+			slos.GET("/:id/report", h.ExportSLOReport)
+			slos.POST("/compare-trend", h.CompareSLOTrends)
 		}
 
 		api.POST("/traces/compare", h.CompareTraces)
@@ -1152,5 +1156,203 @@ func (h *Handler) CalculateBudgetPreview(c *gin.Context) {
 		"budget_absolute": absValue,
 		"budget_unit":     unit,
 		"description":     fmt.Sprintf("允许 %.2f%s不可用", absValue, unit),
+	})
+}
+
+func (h *Handler) ExportSLOReport(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid SLO id"})
+		return
+	}
+
+	format := c.DefaultQuery("format", "json")
+	timeRange := c.DefaultQuery("time_range", "7d")
+	var start, end time.Time
+	end = time.Now()
+
+	switch timeRange {
+	case "7d":
+		start = end.AddDate(0, 0, -7)
+	case "30d":
+		start = end.AddDate(0, 0, -30)
+	case "custom":
+		if s := c.Query("start_date"); s != "" {
+			if t, err := time.Parse("2006-01-02", s); err == nil {
+				start = t
+			}
+		}
+		if e := c.Query("end_date"); e != "" {
+			if t, err := time.Parse("2006-01-02", e); err == nil {
+				end = t.AddDate(0, 0, 1)
+			}
+		}
+	default:
+		start = end.AddDate(0, 0, -7)
+	}
+
+	if start.IsZero() {
+		start = end.AddDate(0, 0, -7)
+	}
+
+	def, err := h.store.GetSLODefinition(c.Request.Context(), id)
+	if err != nil {
+		logrus.Errorf("Get SLO definition for report error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	days, err := h.store.GetSLODailyAggregates(c.Request.Context(), id, start, end)
+	if err != nil {
+		logrus.Errorf("Get SLO daily aggregates error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	totalDays := len(days)
+	daysWithData := 0
+	var sumCompliance, maxConsumed float64
+	breachDays := 0
+
+	for _, d := range days {
+		if d.HasData {
+			daysWithData++
+			compliance := 100.0 - d.ConsumedPct
+			sumCompliance += compliance
+			if d.ConsumedPct > maxConsumed {
+				maxConsumed = d.ConsumedPct
+			}
+			if d.RemainingBudgetPct <= 0 {
+				breachDays++
+			}
+		}
+	}
+
+	dataCoverage := 0.0
+	avgCompliance := 0.0
+	if totalDays > 0 {
+		dataCoverage = float64(daysWithData) / float64(totalDays) * 100.0
+	}
+	if daysWithData > 0 {
+		avgCompliance = sumCompliance / float64(daysWithData)
+	}
+
+	summary := &model.SLOComplianceReportSummary{
+		AvgComplianceRate: math.Round(avgCompliance*100) / 100,
+		MaxDailyConsumed:  math.Round(maxConsumed*100) / 100,
+		BreachDays:        breachDays,
+		DataCoverage:      math.Round(dataCoverage*100) / 100,
+	}
+
+	if format == "csv" {
+		c.Header("Content-Type", "text/csv; charset=utf-8")
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=slo_report_%d.csv", id))
+		var sb strings.Builder
+		sb.WriteString("日期,剩余预算百分比,消耗百分比,违约时长分钟,平均测量值\n")
+		for _, d := range days {
+			sb.WriteString(fmt.Sprintf("%s,%.2f,%.2f,%.2f,%.4f\n",
+				d.Date, d.RemainingBudgetPct, d.ConsumedPct, d.BreachMinutes, d.AvgMeasurement))
+		}
+		c.String(http.StatusOK, sb.String())
+		return
+	}
+
+	report := &model.SLOComplianceReport{
+		Definition: def,
+		TimeStart:  start,
+		TimeEnd:    end,
+		Days:       days,
+		Summary:    summary,
+	}
+	c.Header("Content-Type", "application/json")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=slo_report_%d.json", id))
+	c.JSON(http.StatusOK, report)
+}
+
+func (h *Handler) CompareSLOTrends(c *gin.Context) {
+	var req struct {
+		SLOIDs []int `json:"slo_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(req.SLOIDs) < 2 || len(req.SLOIDs) > 4 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "must select 2-4 SLOs"})
+		return
+	}
+
+	var series []*model.SLOCompareSeries
+	var metrics []*model.SLOCompareMetrics
+
+	for _, sloID := range req.SLOIDs {
+		def, err := h.store.GetSLODefinition(c.Request.Context(), sloID)
+		if err != nil {
+			logrus.Errorf("Get SLO definition for compare error: %v", err)
+			continue
+		}
+
+		snaps, err := h.store.GetSLOBudgetSnapshots(c.Request.Context(), sloID, "hourly", 168)
+		if err != nil {
+			logrus.Errorf("Get SLO budget snapshots for compare error: %v", err)
+			continue
+		}
+
+		var windowDuration time.Duration
+		switch def.WindowType {
+		case "rolling_7d":
+			windowDuration = 7 * 24 * time.Hour
+		case "rolling_30d":
+			windowDuration = 30 * 24 * time.Hour
+		case "calendar_month":
+			windowDuration = 30 * 24 * time.Hour
+		}
+
+		var points []*model.SLOBudgetTrendPoint
+		for i := len(snaps) - 1; i >= 0; i-- {
+			snap := snaps[i]
+			elapsed := snap.CalculatedAt.Sub(snap.WindowStart)
+			var idealPct float64
+			if windowDuration > 0 && elapsed > 0 {
+				idealPct = math.Max(0, 100.0*(1.0-elapsed.Seconds()/windowDuration.Seconds()))
+			} else {
+				idealPct = 100.0
+			}
+			points = append(points, &model.SLOBudgetTrendPoint{
+				Timestamp:              snap.CalculatedAt,
+				ErrorBudgetRemainingPct: snap.ErrorBudgetRemainingPct,
+				IdealBudgetRemainingPct: idealPct,
+			})
+		}
+
+		series = append(series, &model.SLOCompareSeries{
+			SLOID:   def.ID,
+			SLOName: def.Name,
+			Points:  points,
+		})
+
+		snap, _ := h.store.GetLatestSLOBudgetSnapshot(c.Request.Context(), sloID)
+		currentMeasurement := 0.0
+		remainingBudgetPct := 100.0
+		if snap != nil {
+			currentMeasurement = snap.CurrentMeasurement
+			remainingBudgetPct = snap.ErrorBudgetRemainingPct
+		}
+
+		burnRate1h, _ := h.store.GetSLOBurnRate1h(c.Request.Context(), sloID)
+
+		metrics = append(metrics, &model.SLOCompareMetrics{
+			SLOID:              def.ID,
+			SLOName:            def.Name,
+			TargetValue:        def.TargetValue,
+			CurrentMeasurement: currentMeasurement,
+			RemainingBudgetPct: remainingBudgetPct,
+			BurnRate1h:         burnRate1h,
+		})
+	}
+
+	c.JSON(http.StatusOK, &model.SLOCompareResult{
+		Series:  series,
+		Metrics: metrics,
 	})
 }

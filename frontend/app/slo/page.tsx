@@ -2,14 +2,14 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { format } from 'date-fns';
-import { Target, Plus, Trash2, Edit2, X, AlertTriangle, AlertCircle, CheckCircle, Clock, TrendingUp } from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { Target, Plus, Trash2, Edit2, X, AlertTriangle, AlertCircle, CheckCircle, Clock, TrendingUp, GitCompare, Download } from 'lucide-react';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, LineChart, Line, Legend } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { sloApi, topologyApi } from '@/lib/api';
-import type { SLOOverview, SLODetail, SLOBudgetTrendPoint, SLOBurnRateAlert, BudgetPreviewResult, BurnRateRule } from '@/types';
+import type { SLOOverview, SLODetail, SLOBudgetTrendPoint, SLOBurnRateAlert, BudgetPreviewResult, BurnRateRule, SLOCompareResult } from '@/types';
 
 const statusConfig: Record<string, { color: string; bgColor: string; icon: React.ReactNode; label: string }> = {
   healthy: { color: 'text-green-700', bgColor: 'bg-green-100', icon: <CheckCircle className="h-4 w-4" />, label: '健康' },
@@ -36,6 +36,8 @@ const budgetUnitLabels: Record<string, string> = {
   分钟: '分钟',
   小时: '小时',
 };
+
+const compareColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
 
 function CircularProgress({ percentage, size = 80, strokeWidth = 6 }: { percentage: number; size?: number; strokeWidth?: number }) {
   const radius = (size - strokeWidth) / 2;
@@ -70,6 +72,20 @@ export default function SLOPage() {
   const [editingSLO, setEditingSLO] = useState<SLODetail | null>(null);
   const [services, setServices] = useState<string[]>([]);
   const [budgetPreview, setBudgetPreview] = useState<BudgetPreviewResult | null>(null);
+
+  const [compareMode, setCompareMode] = useState(false);
+  const [selectedSLOIds, setSelectedSLOIds] = useState<Set<number>>(new Set());
+  const [compareResult, setCompareResult] = useState<SLOCompareResult | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+
+  const [showExportDialog, setShowExportDialog] = useState(false);
+  const [exportConfig, setExportConfig] = useState({
+    time_range: '7d' as '7d' | '30d' | 'custom',
+    format: 'json' as 'json' | 'csv',
+    start_date: '',
+    end_date: '',
+  });
+  const [exportLoading, setExportLoading] = useState(false);
 
   const [formState, setFormState] = useState({
     name: '',
@@ -256,6 +272,82 @@ export default function SLOPage() {
     setShowForm(true);
   };
 
+  const toggleCompareMode = () => {
+    if (compareMode) {
+      setSelectedSLOIds(new Set());
+      setCompareResult(null);
+    }
+    setCompareMode(!compareMode);
+  };
+
+  const toggleSLOSelection = (id: number) => {
+    const next = new Set(selectedSLOIds);
+    if (next.has(id)) {
+      next.delete(id);
+    } else if (next.size < 4) {
+      next.add(id);
+    }
+    setSelectedSLOIds(next);
+  };
+
+  const handleCompare = async () => {
+    if (selectedSLOIds.size < 2) return;
+    setCompareLoading(true);
+    try {
+      const res = await sloApi.compareTrends(Array.from(selectedSLOIds));
+      setCompareResult(res.data);
+    } catch (error) {
+      console.error('Failed to compare SLOs:', error);
+    }
+    setCompareLoading(false);
+  };
+
+  const handleExport = async () => {
+    if (!selectedSLOId) return;
+    setExportLoading(true);
+    try {
+      const params: Record<string, string> = {
+        time_range: exportConfig.time_range,
+        format: exportConfig.format,
+      };
+      if (exportConfig.time_range === 'custom') {
+        if (exportConfig.start_date) params.start_date = exportConfig.start_date;
+        if (exportConfig.end_date) params.end_date = exportConfig.end_date;
+      }
+      const res = await sloApi.exportReport(selectedSLOId, params as any);
+      const blob = new Blob([res.data], {
+        type: exportConfig.format === 'csv' ? 'text/csv' : 'application/json',
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `slo_report_${selectedSLOId}.${exportConfig.format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      setShowExportDialog(false);
+    } catch (error) {
+      console.error('Failed to export report:', error);
+    }
+    setExportLoading(false);
+  };
+
+  const buildCompareChartData = () => {
+    if (!compareResult || compareResult.series.length === 0) return [];
+    const timeMap = new Map<string, Record<string, number>>();
+    for (const s of compareResult.series) {
+      for (const p of s.points) {
+        const key = format(new Date(p.timestamp), 'MM-dd HH:mm');
+        const existing = timeMap.get(key) || {};
+        existing[s.slo_name] = p.error_budget_remaining_pct;
+        timeMap.set(key, existing);
+      }
+    }
+    const sorted = Array.from(timeMap.entries()).sort(([a], [b]) => a.localeCompare(b));
+    return sorted.map(([time, values]) => ({ time, ...values }));
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -268,10 +360,19 @@ export default function SLOPage() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">SLO 管理</h1>
-        <Button onClick={openCreateForm}>
-          <Plus className="h-4 w-4 mr-2" />
-          新建SLO
-        </Button>
+        <div className="flex space-x-2">
+          <Button
+            variant={compareMode ? 'default' : 'outline'}
+            onClick={toggleCompareMode}
+          >
+            <GitCompare className="h-4 w-4 mr-2" />
+            {compareMode ? '退出对比' : '对比模式'}
+          </Button>
+          <Button onClick={openCreateForm}>
+            <Plus className="h-4 w-4 mr-2" />
+            新建SLO
+          </Button>
+        </div>
       </div>
 
       {showForm && (
@@ -381,7 +482,7 @@ export default function SLOPage() {
       )}
 
       <div className="flex gap-6">
-        <div className={`${detail ? 'w-1/3' : 'w-full'} transition-all duration-300`}>
+        <div className={`${detail || (compareMode && compareResult) ? 'w-1/3' : 'w-full'} transition-all duration-300`}>
           <div className="grid grid-cols-1 gap-4">
             {slos.map((slo) => {
               const status = statusConfig[slo.status] || statusConfig.healthy;
@@ -391,12 +492,27 @@ export default function SLOPage() {
                   className={`cursor-pointer transition-all hover:shadow-md ${
                     selectedSLOId === slo.id ? 'ring-2 ring-blue-500' : ''
                   }`}
-                  onClick={() => setSelectedSLOId(slo.id)}
+                  onClick={() => {
+                    if (compareMode) return;
+                    setSelectedSLOId(slo.id);
+                  }}
                 >
                   <CardContent className="p-4">
                     <div className="flex items-center justify-between">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
+                          {compareMode && (
+                            <input
+                              type="checkbox"
+                              checked={selectedSLOIds.has(slo.id)}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                toggleSLOSelection(slo.id);
+                              }}
+                              className="rounded border-gray-300"
+                              disabled={!selectedSLOIds.has(slo.id) && selectedSLOIds.size >= 4}
+                            />
+                          )}
                           <h3 className="text-sm font-semibold text-gray-900 dark:text-white truncate">{slo.name}</h3>
                           <span className={`inline-flex items-center px-2 py-0.5 text-xs rounded ${status.bgColor} ${status.color}`}>
                             {status.icon}
@@ -423,9 +539,29 @@ export default function SLOPage() {
               </div>
             )}
           </div>
+
+          {compareMode && (
+            <div className="mt-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-sm text-gray-600 dark:text-gray-400">
+                  已选 {selectedSLOIds.size}/4 个SLO
+                </span>
+                <Button
+                  size="sm"
+                  disabled={selectedSLOIds.size < 2 || compareLoading}
+                  onClick={handleCompare}
+                >
+                  {compareLoading ? '加载中...' : '开始对比'}
+                </Button>
+              </div>
+              {selectedSLOIds.size < 2 && (
+                <p className="text-xs text-gray-400">请勾选至少2个SLO进行对比</p>
+              )}
+            </div>
+          )}
         </div>
 
-        {detail && (
+        {!compareMode && detail && (
           <div className="w-2/3 space-y-4">
             <Card>
               <CardHeader>
@@ -445,6 +581,13 @@ export default function SLOPage() {
                     </p>
                   </div>
                   <div className="flex space-x-2">
+                    <button
+                      onClick={() => setShowExportDialog(true)}
+                      className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+                      title="导出报告"
+                    >
+                      <Download className="h-4 w-4 text-gray-500" />
+                    </button>
                     <button onClick={() => handleEdit(detail)} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded">
                       <Edit2 className="h-4 w-4 text-gray-500" />
                     </button>
@@ -594,7 +737,160 @@ export default function SLOPage() {
             </Card>
           </div>
         )}
+
+        {compareMode && compareResult && (
+          <div className="w-2/3 space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">错误预算消耗趋势对比</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={buildCompareChartData()} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="time" tick={{ fontSize: 10 }} />
+                      <YAxis domain={[0, 100]} tickFormatter={(v: number) => `${v}%`} tick={{ fontSize: 10 }} />
+                      <Tooltip formatter={(value: number) => `${value.toFixed(1)}%`} />
+                      <Legend />
+                      {compareResult.series.map((s, idx) => (
+                        <Line
+                          key={s.slo_id}
+                          type="monotone"
+                          dataKey={s.slo_name}
+                          stroke={compareColors[idx % compareColors.length]}
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                      ))}
+                      <ReferenceLine y={20} stroke="#f59e0b" strokeDasharray="3 3" label={{ value: '警告线', position: 'right', fontSize: 10 }} />
+                      <ReferenceLine y={0} stroke="#ef4444" strokeDasharray="3 3" label={{ value: '违约线', position: 'right', fontSize: 10 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">关键指标对比</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-200 dark:border-gray-700">
+                        <th className="text-left py-2 px-3 font-medium text-gray-600 dark:text-gray-400">SLO名称</th>
+                        <th className="text-right py-2 px-3 font-medium text-gray-600 dark:text-gray-400">目标成功率</th>
+                        <th className="text-right py-2 px-3 font-medium text-gray-600 dark:text-gray-400">当前测量值</th>
+                        <th className="text-right py-2 px-3 font-medium text-gray-600 dark:text-gray-400">剩余预算%</th>
+                        <th className="text-right py-2 px-3 font-medium text-gray-600 dark:text-gray-400">燃烧率(1h)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {compareResult.metrics.map((m, idx) => (
+                        <tr key={m.slo_id} className="border-b border-gray-100 dark:border-gray-800">
+                          <td className="py-2 px-3 flex items-center gap-2">
+                            <span
+                              className="w-3 h-3 rounded-full flex-shrink-0"
+                              style={{ backgroundColor: compareColors[idx % compareColors.length] }}
+                            />
+                            {m.slo_name}
+                          </td>
+                          <td className={`text-right py-2 px-3 ${(m.target_value * 100) < 99 ? 'bg-red-50 dark:bg-red-900/20' : ''}`}>
+                            {(m.target_value * 100).toFixed(2)}%
+                          </td>
+                          <td className={`text-right py-2 px-3 ${m.current_measurement < m.target_value ? 'bg-red-50 dark:bg-red-900/20' : ''}`}>
+                            {(m.current_measurement * 100).toFixed(2)}%
+                          </td>
+                          <td className={`text-right py-2 px-3 ${m.remaining_budget_pct <= 20 ? 'bg-red-50 dark:bg-red-900/20' : ''}`}>
+                            {m.remaining_budget_pct.toFixed(1)}%
+                          </td>
+                          <td className={`text-right py-2 px-3 ${m.burn_rate_1h > 14 ? 'bg-red-50 dark:bg-red-900/20' : m.burn_rate_1h > 6 ? 'bg-yellow-50 dark:bg-yellow-900/20' : ''}`}>
+                            {m.burn_rate_1h.toFixed(1)}x
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
       </div>
+
+      {showExportDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowExportDialog(false)}>
+          <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">导出合规报告</h3>
+              <button onClick={() => setShowExportDialog(false)} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">时间范围</label>
+                <Select
+                  value={exportConfig.time_range}
+                  onChange={(e) => setExportConfig((p) => ({ ...p, time_range: e.target.value as typeof exportConfig.time_range }))}
+                >
+                  <option value="7d">最近7天</option>
+                  <option value="30d">最近30天</option>
+                  <option value="custom">自定义</option>
+                </Select>
+              </div>
+
+              {exportConfig.time_range === 'custom' && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">开始日期</label>
+                    <Input
+                      type="date"
+                      value={exportConfig.start_date}
+                      onChange={(e) => setExportConfig((p) => ({ ...p, start_date: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">结束日期</label>
+                    <Input
+                      type="date"
+                      value={exportConfig.end_date}
+                      onChange={(e) => setExportConfig((p) => ({ ...p, end_date: e.target.value }))}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">报告格式</label>
+                <Select
+                  value={exportConfig.format}
+                  onChange={(e) => setExportConfig((p) => ({ ...p, format: e.target.value as typeof exportConfig.format }))}
+                >
+                  <option value="json">JSON</option>
+                  <option value="csv">CSV</option>
+                </Select>
+                <p className="text-xs text-gray-400 mt-1">
+                  {exportConfig.format === 'json'
+                    ? '包含SLO定义、每日明细和汇总统计'
+                    : '每天一行: 日期、剩余预算%、消耗%、违约时长、平均测量值'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end space-x-2 mt-6">
+              <Button variant="outline" onClick={() => setShowExportDialog(false)}>取消</Button>
+              <Button onClick={handleExport} disabled={exportLoading}>
+                <Download className="h-4 w-4 mr-2" />
+                {exportLoading ? '导出中...' : '导出'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

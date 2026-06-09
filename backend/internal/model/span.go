@@ -266,6 +266,50 @@ type SLOBudgetTrendPoint struct {
 	IdealBudgetRemainingPct float64  `json:"ideal_budget_remaining_pct"`
 }
 
+type SLOComplianceReportDay struct {
+	Date              string  `json:"date"`
+	RemainingBudgetPct float64 `json:"remaining_budget_pct"`
+	ConsumedPct       float64 `json:"consumed_pct"`
+	BreachMinutes     float64 `json:"breach_minutes"`
+	AvgMeasurement    float64 `json:"avg_measurement"`
+	HasData           bool    `json:"has_data"`
+}
+
+type SLOComplianceReportSummary struct {
+	AvgComplianceRate float64 `json:"avg_compliance_rate"`
+	MaxDailyConsumed  float64 `json:"max_daily_consumed"`
+	BreachDays        int     `json:"breach_days"`
+	DataCoverage      float64 `json:"data_coverage"`
+}
+
+type SLOComplianceReport struct {
+	Definition *SLODefinition            `json:"definition"`
+	TimeStart  time.Time                 `json:"time_start"`
+	TimeEnd    time.Time                 `json:"time_end"`
+	Days       []*SLOComplianceReportDay `json:"days"`
+	Summary    *SLOComplianceReportSummary `json:"summary"`
+}
+
+type SLOCompareSeries struct {
+	SLOID   int                    `json:"slo_id"`
+	SLOName string                 `json:"slo_name"`
+	Points  []*SLOBudgetTrendPoint `json:"points"`
+}
+
+type SLOCompareMetrics struct {
+	SLOID               int     `json:"slo_id"`
+	SLOName             string  `json:"slo_name"`
+	TargetValue         float64 `json:"target_value"`
+	CurrentMeasurement  float64 `json:"current_measurement"`
+	RemainingBudgetPct  float64 `json:"remaining_budget_pct"`
+	BurnRate1h          float64 `json:"burn_rate_1h"`
+}
+
+type SLOCompareResult struct {
+	Series  []*SLOCompareSeries  `json:"series"`
+	Metrics []*SLOCompareMetrics `json:"metrics"`
+}
+
 func (s *Span) MarshalJSON() ([]byte, error) {
 	type Alias Span
 	return json.Marshal(&struct {
