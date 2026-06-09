@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trace-topo-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trace}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trace123}
+      POSTGRES_DB: ${POSTGRES_DB:-trace_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trace} -d ${POSTGRES_DB:-trace_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trace-topo-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: trace-topo-backend
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-trace}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-trace123}
+      DB_NAME: ${POSTGRES_DB:-trace_db}
+      GRPC_PORT: ${GRPC_PORT:-4317}
+      HTTP_PORT: ${HTTP_PORT:-8080}
+      RETENTION_DAYS: ${RETENTION_DAYS:-7}
+      ORPHAN_TIMEOUT_SECONDS: ${ORPHAN_TIMEOUT_SECONDS:-30}
+      TRACE_COMPLETE_TIMEOUT_SECONDS: ${TRACE_COMPLETE_TIMEOUT_SECONDS:-30}
+      MAX_SPANS_PER_TRACE: ${MAX_SPANS_PER_TRACE:-500}
+      MAX_BATCH_SIZE: ${MAX_BATCH_SIZE:-1000}
+      SAMPLING_HEAD_SAMPLE_RATE: ${SAMPLING_HEAD_SAMPLE_RATE:-1.0}
+      SAMPLING_TAIL_SAMPLE_RATE: ${SAMPLING_TAIL_SAMPLE_RATE:-0.1}
+      SAMPLING_TYPE: ${SAMPLING_TYPE:-head}
+    ports:
+      - "4317:4317"
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - trace-topo-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: trace-topo-frontend
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+    networks:
+      - trace-topo-network
+
+volumes:
+  postgres_data:
+
+networks:
+  trace-topo-network:
+    driver: bridge
