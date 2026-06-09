@@ -368,7 +368,7 @@ func (e *Engine) evaluateBurnRate(ctx context.Context, def *model.SLODefinition,
 func CalculateErrorBudgetAbsolute(targetValue float64, windowType string) (float64, string) {
 	errorBudgetPct := 1.0 - targetValue
 	if errorBudgetPct <= 0 {
-		return 0, "minutes"
+		return 0, "分钟"
 	}
 
 	var windowMinutes float64
@@ -386,9 +386,9 @@ func CalculateErrorBudgetAbsolute(targetValue float64, windowType string) (float
 	allowedMinutes := errorBudgetPct * windowMinutes
 
 	if allowedMinutes >= 60 {
-		return math.Round(allowedMinutes/60*100) / 100, "hours"
+		return math.Round(allowedMinutes/60*100) / 100, "小时"
 	}
-	return math.Round(allowedMinutes*100) / 100, "minutes"
+	return math.Round(allowedMinutes*100) / 100, "分钟"
 }
 
 func GetSLOStatus(remainingBudgetPct float64) string {

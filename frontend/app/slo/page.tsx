@@ -74,6 +74,12 @@ export default function SLOPage() {
     enabled: true,
   });
 
+  const defaultValueByType: Record<string, number> = {
+    availability: 99.9,
+    latency: 99,
+    throughput: 99,
+  };
+
   const loadSLOs = async () => {
     try {
       const res = await sloApi.getSLOs();
@@ -126,7 +132,7 @@ export default function SLOPage() {
   }, [selectedSLOId]);
 
   const previewBudget = useCallback(async (targetValue: number, windowType: string) => {
-    const decimalValue = targetValue > 1 ? targetValue / 100 : targetValue;
+    const decimalValue = targetValue / 100;
     if (decimalValue <= 0 || decimalValue > 1) {
       setBudgetPreview(null);
       return;
@@ -144,7 +150,11 @@ export default function SLOPage() {
   }, [formState.target_value, formState.window_type, previewBudget]);
 
   const handleSave = async () => {
-    const decimalValue = formState.target_value > 1 ? formState.target_value / 100 : formState.target_value;
+    const decimalValue = formState.target_value / 100;
+    if (decimalValue <= 0 || decimalValue > 1) {
+      alert('目标值(%)必须在0到100之间');
+      return;
+    }
     const payload: Record<string, unknown> = {
       name: formState.name,
       service_name: formState.service_name,
@@ -264,7 +274,10 @@ export default function SLOPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">目标类型</label>
-                <Select value={formState.target_type} onChange={(e) => setFormState((p) => ({ ...p, target_type: e.target.value as typeof formState.target_type }))}>
+                <Select value={formState.target_type} onChange={(e) => {
+                  const newType = e.target.value as typeof formState.target_type;
+                  setFormState((p) => ({ ...p, target_type: newType, target_value: defaultValueByType[newType] || 99 }));
+                }}>
                   <option value="availability">可用性</option>
                   <option value="latency">延迟</option>
                   <option value="throughput">吞吐量</option>
@@ -272,16 +285,22 @@ export default function SLOPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  目标值 ({formState.target_type === 'availability' ? '%' : formState.target_type === 'latency' ? 'P99 < Xms' : 'QPS'})
+                  目标成功率 (%)
                 </label>
                 <Input type="number" step="0.1" value={formState.target_value}
                   onChange={(e) => setFormState((p) => ({ ...p, target_value: Number(e.target.value) }))} />
+                <p className="text-xs text-gray-400 mt-1">
+                  {formState.target_type === 'availability' && '如99.9表示99.9%的请求需成功'}
+                  {formState.target_type === 'latency' && '如99表示99%的请求延迟需低于阈值'}
+                  {formState.target_type === 'throughput' && '如99表示99%的时间QPS需达标'}
+                </p>
               </div>
               {formState.target_type === 'latency' && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">延迟阈值 (ms)</label>
                   <Input type="number" value={formState.latency_threshold_ms}
                     onChange={(e) => setFormState((p) => ({ ...p, latency_threshold_ms: Number(e.target.value) }))} />
+                  <p className="text-xs text-gray-400 mt-1">超过此值的请求计为不达标</p>
                 </div>
               )}
               {formState.target_type === 'throughput' && (
@@ -289,6 +308,7 @@ export default function SLOPage() {
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">目标 QPS</label>
                   <Input type="number" value={formState.target_qps}
                     onChange={(e) => setFormState((p) => ({ ...p, target_qps: Number(e.target.value) }))} />
+                  <p className="text-xs text-gray-400 mt-1">低于此QPS的时间计为不达标</p>
                 </div>
               )}
               <div>
@@ -307,12 +327,21 @@ export default function SLOPage() {
               </div>
             </div>
 
-            {budgetPreview && (
+            {budgetPreview ? (
               <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
                 <div className="flex items-center">
-                  <Target className="h-4 w-4 text-blue-600 mr-2" />
+                  <Target className="h-4 w-4 text-blue-600 mr-2 flex-shrink-0" />
                   <span className="text-sm font-medium text-blue-800 dark:text-blue-300">
                     错误预算预览: {budgetPreview.description}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 p-3 bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-lg">
+                <div className="flex items-center">
+                  <Target className="h-4 w-4 text-gray-400 mr-2 flex-shrink-0" />
+                  <span className="text-sm text-gray-500 dark:text-gray-400">
+                    请填写目标成功率和计算窗口以预览错误预算
                   </span>
                 </div>
               </div>
@@ -351,7 +380,7 @@ export default function SLOPage() {
                         </div>
                         <p className="text-xs text-gray-500 dark:text-gray-400">{slo.service_name} · {targetTypeLabels[slo.target_type]} · {windowTypeLabels[slo.window_type]}</p>
                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                          目标: {slo.target_type === 'availability' ? `${(slo.target_value * 100).toFixed(1)}%` : slo.target_type === 'latency' ? `P99<${slo.target_value}ms` : `${slo.target_value} QPS`}
+                          目标成功率: {(slo.target_value * 100).toFixed(1)}%
                         </p>
                       </div>
                       <div className="ml-4 flex-shrink-0">
@@ -411,19 +440,19 @@ export default function SLOPage() {
                   </div>
                   <div className="space-y-2">
                     <div>
-                      <p className="text-xs text-gray-500">目标值</p>
+                      <p className="text-xs text-gray-500">目标成功率</p>
                       <p className="text-sm font-medium">
-                        {detail.definition.target_type === 'availability'
-                          ? `${(detail.definition.target_value * 100).toFixed(2)}%`
-                          : detail.definition.target_type === 'latency'
-                          ? `P99 < ${detail.definition.latency_threshold_ms || 200}ms`
-                          : `${detail.definition.target_qps || 100} QPS`}
+                        {(detail.definition.target_value * 100).toFixed(2)}%
+                        {detail.definition.target_type === 'latency' && detail.definition.latency_threshold_ms &&
+                          ` (延迟阈值: ${detail.definition.latency_threshold_ms}ms)`}
+                        {detail.definition.target_type === 'throughput' && detail.definition.target_qps &&
+                          ` (目标QPS: ${detail.definition.target_qps})`}
                       </p>
                     </div>
                     <div>
                       <p className="text-xs text-gray-500">错误预算</p>
                       <p className="text-sm font-medium">
-                        允许 {detail.definition.budget_total} {detail.definition.budget_unit}不可用
+                        允许 {detail.definition.budget_total}{detail.definition.budget_unit}不可用
                       </p>
                     </div>
                     <div>

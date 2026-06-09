@@ -1146,6 +1146,6 @@ func (h *Handler) CalculateBudgetPreview(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"budget_absolute": absValue,
 		"budget_unit":     unit,
-		"description":     fmt.Sprintf("允许 %.2f %s不可用", absValue, unit),
+		"description":     fmt.Sprintf("允许 %.2f%s不可用", absValue, unit),
 	})
 }
