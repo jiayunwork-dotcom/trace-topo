@@ -27,11 +27,7 @@ services:
       dockerfile: Dockerfile
     container_name: trace-topo-backend
     environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: ${POSTGRES_USER:-trace}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-trace123}
-      DB_NAME: ${POSTGRES_DB:-trace_db}
+      DATABASE_URL: postgres://${POSTGRES_USER:-trace}:${POSTGRES_PASSWORD:-trace123}@postgres:5432/${POSTGRES_DB:-trace_db}?sslmode=disable
       GRPC_PORT: ${GRPC_PORT:-4317}
       HTTP_PORT: ${HTTP_PORT:-8080}
       RETENTION_DAYS: ${RETENTION_DAYS:-7}
