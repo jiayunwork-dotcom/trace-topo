@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type {
-  Span, SpanTreeNode, TraceSummary, SearchResponse, TopologyGraph, TopologyEdge, Metrics, TrendPoint, SamplingConfig, SearchFilters, ServiceDetails } from '@/types';
+  Span, SpanTreeNode, TraceSummary, SearchResponse, TopologyGraph, Metrics, TrendPoint, SamplingConfig, SearchFilters, ServiceDetail, Trace, SearchRequest } from '@/types';
 
 const baseURL = process.env.NEXT_PUBLIC_API_BASE || '/api/v1';
 
@@ -13,7 +13,7 @@ const api = axios.create({
 });
 
 export const traceApi = {
-  searchTraces: async (filters: SearchFilters) => {
+  searchTraces: async (filters: SearchRequest) => {
     const params = new URLSearchParams();
     Object.entries(filters).forEach(([key, value]) => {
       if (value !== undefined && value !== null && value !== '') {
@@ -24,7 +24,7 @@ export const traceApi = {
   },
 
   getTrace: async (traceId: string) => {
-    return api.get<{ summary: TraceSummary }>(`/traces/${traceId}`);
+    return api.get<Trace>(`/traces/${traceId}`);
   },
 
   getTraceSpans: async (traceId: string, startTime?: string, endTime?: string) => {
@@ -35,17 +35,25 @@ export const traceApi = {
   },
 
   getAnomalies: async (limit = 100) => {
-    return api.get<{ data: TraceSummary[] }>(`/anomalies?limit=${limit}`);
+    return api.get<SearchResponse>(`/anomalies?limit=${limit}`);
   },
 };
 
 export const topologyApi = {
+  getGraph: async (window: '5m' | '1h' | '24h' = '5m') => {
+    return api.get<TopologyGraph>(`/topology?window=${window}`);
+  },
+
   getTopology: async (window: '5m' | '1h' | '24h' = '5m') => {
     return api.get<TopologyGraph>(`/topology?window=${window}`);
   },
 
+  getServiceDetail: async (serviceName: string, window: '5m' | '1h' | '24h' = '5m') => {
+    return api.get<ServiceDetail>(`/topology/services/${serviceName}?window=${window}`);
+  },
+
   getServiceDetails: async (serviceName: string, window: '5m' | '1h' | '24h' = '5m') => {
-    return api.get<ServiceDetails>(`/topology/services/${serviceName}?window=${window}`);
+    return api.get<ServiceDetail>(`/topology/services/${serviceName}?window=${window}`);
   },
 
   getServices: async () => {

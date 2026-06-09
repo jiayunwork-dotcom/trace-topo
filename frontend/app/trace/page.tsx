@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, XCircle } from 'lucide-react';
 import { format } from 'date-fns';
 import FlameChart from '@/components/FlameChart';
@@ -11,16 +11,17 @@ import { traceApi } from '@/lib/api';
 import { formatDuration } from '@/lib/utils';
 import type { Trace, SpanTreeNode } from '@/types';
 
-export default function TraceDetailPage() {
-  const params = useParams();
+function TraceDetailContent() {
   const router = useRouter();
-  const traceId = params.id as string;
+  const searchParams = useSearchParams();
+  const traceId = searchParams.get('id') || '';
 
   const [trace, setTrace] = useState<Trace | null>(null);
   const [selectedSpan, setSelectedSpan] = useState<SpanTreeNode | null>(null);
   const [loading, setLoading] = useState(true);
 
   const loadTrace = async () => {
+    if (!traceId) return;
     try {
       const res = await traceApi.getTrace(traceId);
       setTrace(res.data);
@@ -32,9 +33,7 @@ export default function TraceDetailPage() {
   };
 
   useEffect(() => {
-    if (traceId) {
-      loadTrace();
-    }
+    loadTrace();
   }, [traceId]);
 
   const handleSpanClick = (span: SpanTreeNode) => {
@@ -255,5 +254,19 @@ export default function TraceDetailPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function TraceDetailPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center h-64">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        </div>
+      }
+    >
+      <TraceDetailContent />
+    </Suspense>
   );
 }

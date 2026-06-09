@@ -82,10 +82,10 @@ export default function TopologyGraph({ data, onNodeClick, onEdgeClick }: Topolo
       .range([1, 8]);
 
     const simulation = d3.forceSimulation<D3Node>(nodes)
-      .force('link', d3.forceLink<D3Node>(links).id((d) => d.id).distance(150))
+      .force('link', d3.forceLink<D3Node, D3Link>(links).id((d) => d.id).distance(150))
       .force('charge', d3.forceManyBody().strength(-500))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius((d) => nodeSize(d.qps) + 10));
+      .force('collision', d3.forceCollide<D3Node>().radius((d) => nodeSize(d.qps) + 10));
 
     const link = g.append('g')
       .selectAll('line')
@@ -128,21 +128,23 @@ export default function TopologyGraph({ data, onNodeClick, onEdgeClick }: Topolo
       .data(nodes)
       .join('g')
       .attr('class', 'topology-node')
-      .call(d3.drag<D3DragEvent, D3Node, D3Node>()
-        .on('start', (event, d) => {
-          if (!event.active) simulation.alphaTarget(0.3).restart();
-          d.fx = d.x;
-          d.fy = d.y;
-        })
-        .on('drag', (event, d) => {
-          d.fx = event.x;
-          d.fy = event.y;
-        })
-        .on('end', (event, d) => {
-          if (!event.active) simulation.alphaTarget(0);
-          d.fx = null;
-          d.fy = null;
-        }));
+      .call((selection) => {
+        d3.drag<SVGGElement, D3Node>()
+          .on('start', (event: d3.D3DragEvent<SVGGElement, D3Node, D3Node>, d) => {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+          })
+          .on('drag', (event: d3.D3DragEvent<SVGGElement, D3Node, D3Node>, d) => {
+            d.fx = event.x;
+            d.fy = event.y;
+          })
+          .on('end', (event: d3.D3DragEvent<SVGGElement, D3Node, D3Node>, d) => {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+          })(selection as d3.Selection<SVGGElement, D3Node, any, any>);
+      });
 
     node.append('circle')
       .attr('r', (d) => nodeSize(d.qps))

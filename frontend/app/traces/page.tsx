@@ -33,7 +33,7 @@ export default function TracesPage() {
   const loadServices = async () => {
     try {
       const res = await topologyApi.getServices();
-      setServices(res.data.services);
+      setServices(res.data.data);
     } catch (error) {
       console.error('Failed to load services:', error);
     }
@@ -46,7 +46,7 @@ export default function TracesPage() {
     }
     try {
       const res = await topologyApi.getOperations(service);
-      setOperations(res.data.operations);
+      setOperations(res.data.data);
     } catch (error) {
       console.error('Failed to load operations:', error);
     }
@@ -207,7 +207,7 @@ export default function TracesPage() {
                       <tr
                         key={trace.trace_id}
                         className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer"
-                        onClick={() => (window.location.href = `/trace/${trace.trace_id}`)}
+                        onClick={() => (window.location.href = `/trace/?id=${trace.trace_id}`)}
                       >
                         <td className="py-3 px-4 font-mono text-xs text-blue-600">
                           {trace.trace_id.slice(0, 16)}...

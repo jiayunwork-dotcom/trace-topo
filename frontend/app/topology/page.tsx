@@ -6,18 +6,18 @@ import TopologyGraph from '@/components/TopologyGraph';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { topologyApi } from '@/lib/api';
 import { formatDuration, formatNumber, formatPercent } from '@/lib/utils';
-import type { TopologyGraph as TopologyGraphType, TopologyNode, ServiceDetails } from '@/types';
+import type { TopologyGraph as TopologyGraphType, TopologyNode, ServiceDetail } from '@/types';
 
 export default function TopologyPage() {
   const [topology, setTopology] = useState<TopologyGraphType | null>(null);
   const [selectedService, setSelectedService] = useState<string | null>(null);
-  const [serviceDetail, setServiceDetail] = useState<ServiceDetails | null>(null);
+  const [serviceDetail, setServiceDetail] = useState<ServiceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [windowSize, setWindowSize] = useState<'5m' | '1h' | '24h'>('5m');
 
   const loadTopology = async () => {
     try {
-      const res = await topologyApi.getTopology(windowSize);
+      const res = await topologyApi.getGraph(windowSize);
       setTopology(res.data);
     } catch (error) {
       console.error('Failed to load topology:', error);
@@ -28,7 +28,7 @@ export default function TopologyPage() {
 
   const loadServiceDetail = async (serviceName: string) => {
     try {
-      const res = await topologyApi.getServiceDetails(serviceName, windowSize);
+      const res = await topologyApi.getServiceDetail(serviceName, windowSize);
       setServiceDetail(res.data);
     } catch (error) {
       console.error('Failed to load service detail:', error);

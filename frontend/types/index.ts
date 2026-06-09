@@ -4,19 +4,41 @@ export interface Span {
   parent_span_id?: string;
   service_name: string;
   operation_name: string;
-  start_time: string;
-  end_time: string;
+  start_time: number;
+  end_time: number;
   duration_ms: number;
   status_code: number;
   attributes?: Record<string, unknown>;
   is_orphan?: boolean;
+  is_critical_path?: boolean;
   created_at?: string;
 }
 
 export interface SpanTreeNode {
-  Span: Span;
+  trace_id: string;
+  span_id: string;
+  parent_span_id?: string;
+  service_name: string;
+  operation_name: string;
+  start_time: number;
+  duration_ms: number;
+  status_code: number;
+  attributes?: Record<string, unknown>;
+  is_orphan?: boolean;
+  is_critical_path?: boolean;
   children?: SpanTreeNode[];
-  depth: number;
+}
+
+export interface Trace {
+  trace_id: string;
+  spans: SpanTreeNode[];
+  total_duration_ms: number;
+  start_time: string;
+  end_time: string;
+  is_slow: boolean;
+  is_anomaly: boolean;
+  is_retry_storm: boolean;
+  is_critical_path: boolean;
 }
 
 export interface TraceSummary {
@@ -31,6 +53,18 @@ export interface TraceSummary {
   is_slow: boolean;
   is_anomaly: boolean;
   is_retry_storm: boolean;
+}
+
+export interface SearchRequest {
+  service_name: string;
+  operation_name: string;
+  min_latency_ms: number;
+  max_latency_ms: number;
+  status: string;
+  start_time: string;
+  end_time: string;
+  page: number;
+  page_size: number;
 }
 
 export interface SearchResponse {
@@ -62,6 +96,22 @@ export interface TopologyEdge {
 export interface TopologyGraph {
   nodes: TopologyNode[];
   edges: TopologyEdge[];
+}
+
+export interface ServiceDetail {
+  service_name: string;
+  total_qps: number;
+  avg_latency: number;
+  error_rate: number;
+  upstreams: ServiceEdge[];
+  downstreams: ServiceEdge[];
+}
+
+export interface ServiceEdge {
+  service: string;
+  call_count: number;
+  avg_latency: number;
+  error_rate: number;
 }
 
 export interface Metrics {
@@ -96,15 +146,6 @@ export interface SearchFilters {
   only_anomaly?: boolean;
   limit?: number;
   offset?: number;
-}
-
-export interface ServiceDetails {
-  service_name: string;
-  total_qps: number;
-  avg_latency: number;
-  error_rate: number;
-  upstreams: TopologyEdge[];
-  downstreams: TopologyEdge[];
 }
 
 export const statusColorMap: Record<string, string> = {
