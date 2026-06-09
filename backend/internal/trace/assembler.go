@@ -433,14 +433,14 @@ func (a *Assembler) markOrphanSpans() {
 	}
 }
 
-func (a *Assembler) onTraceEvicted(key string, pt *pendingTrace, reason expirable.EvictReason) {
+func (a *Assembler) onTraceEvicted(key string, pt *pendingTrace) {
 	if !pt.trace.IsComplete {
 		ctx := context.Background()
 		a.finalizeTrace(ctx, key)
 	}
 }
 
-func (a *Assembler) onOrphanEvicted(key string, spans []*model.Span, reason expirable.EvictReason) {
+func (a *Assembler) onOrphanEvicted(key string, spans []*model.Span) {
 	for _, span := range spans {
 		span.IsOrphan = true
 	}

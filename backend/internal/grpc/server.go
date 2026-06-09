@@ -18,6 +18,7 @@ import (
 	"trace-topo/internal/model"
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	v1 "go.opentelemetry.io/proto/otlp/trace/v1"
+	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
 type SpanProcessor interface {
@@ -190,20 +191,20 @@ func getServiceName(rs *v1.ResourceSpans) string {
 	return "unknown"
 }
 
-func getAttributeValue(attr interface{ GetValue() *v1.AnyValue }) interface{} {
+func getAttributeValue(attr interface{ GetValue() *commonv1.AnyValue }) interface{} {
 	val := attr.GetValue()
 	if val == nil {
 		return nil
 	}
 
 	switch v := val.Value.(type) {
-	case *v1.AnyValue_StringValue:
+	case *commonv1.AnyValue_StringValue:
 		return v.StringValue
-	case *v1.AnyValue_BoolValue:
+	case *commonv1.AnyValue_BoolValue:
 		return v.BoolValue
-	case *v1.AnyValue_IntValue:
+	case *commonv1.AnyValue_IntValue:
 		return v.IntValue
-	case *v1.AnyValue_DoubleValue:
+	case *commonv1.AnyValue_DoubleValue:
 		return v.DoubleValue
 	default:
 		return nil

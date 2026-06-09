@@ -410,7 +410,7 @@ func (d *Discoverer) PersistToDB(ctx context.Context) {
 
 	p99Cache, _ := d.p99Provider.GetAllOperationP99(ctx)
 
-	for key, wd := range d.windows[Window5Min] {
+	for key := range d.windows[Window5Min] {
 		opKey := key.source + ":" + key.target
 		if p99, ok := p99Cache[opKey]; ok {
 			d.p99Provider.(interface{ UpdateOperationP99(context.Context, string, string, float64) error }).
