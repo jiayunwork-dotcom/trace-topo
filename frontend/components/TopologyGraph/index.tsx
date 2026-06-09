@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import type { TopologyGraph as TopologyGraphType, TopologyNode, TopologyEdge } from '@/types';
-import { statusColorMap, formatNumber, formatDuration, formatPercent } from '@/lib/utils';
+import { statusColorMap } from '@/types';
+import { formatNumber, formatDuration, formatPercent } from '@/lib/utils';
 
 interface TopologyGraphProps {
   data: TopologyGraphType;

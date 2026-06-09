@@ -99,8 +99,12 @@ export interface SearchFilters {
 }
 
 export interface ServiceDetails {
-  incoming: TopologyEdge[];
-  outgoing: TopologyEdge[];
+  service_name: string;
+  total_qps: number;
+  avg_latency: number;
+  error_rate: number;
+  upstreams: TopologyEdge[];
+  downstreams: TopologyEdge[];
 }
 
 export const statusColorMap: Record<string, string> = {

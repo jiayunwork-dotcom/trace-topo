@@ -9,7 +9,6 @@ dist/
 build/
 *.log
 
-go.sum
 vendor/
 
 *.db
