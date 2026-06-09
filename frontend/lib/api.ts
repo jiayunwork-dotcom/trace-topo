@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type {
-  Span, SpanTreeNode, TraceSummary, SearchResponse, TopologyGraph, Metrics, TrendPoint, SamplingConfig, SearchFilters, ServiceDetail, Trace, SearchRequest } from '@/types';
+  Span, SpanTreeNode, TraceSummary, SearchResponse, TopologyGraph, Metrics, TrendPoint, SamplingConfig, SearchFilters, ServiceDetail, Trace, SearchRequest, HealthScore, AlertRule, AlertEvent, TraceComparison } from '@/types';
 
 const baseURL = process.env.NEXT_PUBLIC_API_BASE || '/api/v1';
 
@@ -92,6 +92,53 @@ export const samplingApi = {
 export const internalApi = {
   getStats: async () => {
     return api.get<{ pending_traces: number; orphan_spans: number }>('/internal/stats');
+  },
+};
+
+export const healthApi = {
+  getAllScores: async () => {
+    return api.get<{ data: Record<string, HealthScore> }>('/health/scores');
+  },
+  getServiceScores: async (serviceName: string, limit = 100) => {
+    return api.get<{ data: HealthScore[] }>(`/health/scores/${serviceName}?limit=${limit}`);
+  },
+};
+
+export const alertApi = {
+  getRules: async () => {
+    return api.get<{ data: AlertRule[] }>('/alerts/rules');
+  },
+  getRule: async (id: number) => {
+    return api.get<AlertRule>(`/alerts/rules/${id}`);
+  },
+  createRule: async (rule: Partial<AlertRule>) => {
+    return api.post<AlertRule>('/alerts/rules', rule);
+  },
+  updateRule: async (id: number, rule: Partial<AlertRule>) => {
+    return api.put<AlertRule>(`/alerts/rules/${id}`, rule);
+  },
+  deleteRule: async (id: number) => {
+    return api.delete(`/alerts/rules/${id}`);
+  },
+  getEvents: async (params?: { rule_id?: number; service?: string; limit?: number; offset?: number }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.rule_id) searchParams.append('rule_id', String(params.rule_id));
+    if (params?.service) searchParams.append('service', params.service);
+    if (params?.limit) searchParams.append('limit', String(params.limit));
+    if (params?.offset) searchParams.append('offset', String(params.offset));
+    return api.get<{ data: AlertEvent[]; total: number; limit: number; offset: number }>(`/alerts/events?${searchParams.toString()}`);
+  },
+  getEvent: async (id: number) => {
+    return api.get<AlertEvent>(`/alerts/events/${id}`);
+  },
+  acknowledgeEvent: async (id: number) => {
+    return api.put(`/alerts/events/${id}/acknowledge`);
+  },
+};
+
+export const compareApi = {
+  compareTraces: async (traceA: string, traceB: string) => {
+    return api.post<TraceComparison>('/traces/compare', { trace_a: traceA, trace_b: traceB });
   },
 };
 

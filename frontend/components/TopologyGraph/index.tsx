@@ -2,12 +2,13 @@
 
 import { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import type { TopologyGraph as TopologyGraphType, TopologyNode, TopologyEdge } from '@/types';
+import type { TopologyGraph as TopologyGraphType, TopologyNode, TopologyEdge, HealthScore } from '@/types';
 import { statusColorMap } from '@/types';
 import { formatNumber, formatDuration, formatPercent } from '@/lib/utils';
 
 interface TopologyGraphProps {
   data: TopologyGraphType;
+  healthScores?: Record<string, HealthScore>;
   onNodeClick?: (node: TopologyNode) => void;
   onEdgeClick?: (edge: TopologyEdge) => void;
 }
@@ -18,6 +19,7 @@ interface D3Node extends d3.SimulationNodeDatum {
   qps: number;
   status: string;
   is_active: boolean;
+  health_score?: number;
 }
 
 interface D3Link extends d3.SimulationLinkDatum<D3Node> {
@@ -31,7 +33,7 @@ interface D3Link extends d3.SimulationLinkDatum<D3Node> {
   is_active: boolean;
 }
 
-export default function TopologyGraph({ data, onNodeClick, onEdgeClick }: TopologyGraphProps) {
+export default function TopologyGraph({ data, healthScores, onNodeClick, onEdgeClick }: TopologyGraphProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [tooltip, setTooltip] = useState<{
@@ -52,6 +54,20 @@ export default function TopologyGraph({ data, onNodeClick, onEdgeClick }: Topolo
 
     svg.attr('width', width).attr('height', height);
 
+    const defs = svg.append('defs');
+
+    defs.append('filter')
+      .attr('id', 'health-pulse-glow')
+      .append('feGaussianBlur')
+      .attr('stdDeviation', 4)
+      .attr('result', 'coloredBlur');
+
+    const feMerge = defs.append('filter')
+      .attr('id', 'health-pulse-merge')
+      .append('feMerge');
+    feMerge.append('feMergeNode').attr('in', 'coloredBlur');
+    feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+
     const g = svg.append('g');
 
     const zoom = d3.zoom<SVGSVGElement, unknown>()
@@ -64,6 +80,7 @@ export default function TopologyGraph({ data, onNodeClick, onEdgeClick }: Topolo
 
     const nodes: D3Node[] = data.nodes.map((n) => ({
       ...n,
+      health_score: healthScores?.[n.name]?.score,
     }));
 
     const links: D3Link[] = data.edges.map((e) => ({
@@ -152,6 +169,12 @@ export default function TopologyGraph({ data, onNodeClick, onEdgeClick }: Topolo
       .attr('fill-opacity', (d) => (d.is_active ? 0.8 : 0.4))
       .attr('stroke', '#fff')
       .attr('stroke-width', 2)
+      .attr('class', (d) => {
+        if (d.health_score !== undefined && d.health_score < 60) {
+          return 'health-critical';
+        }
+        return '';
+      })
       .on('mouseenter', (event, d) => {
         setTooltip({
           show: true,
@@ -162,6 +185,9 @@ export default function TopologyGraph({ data, onNodeClick, onEdgeClick }: Topolo
               <div className="font-semibold">{d.name}</div>
               <div>QPS: {formatNumber(d.qps)}</div>
               <div>状态: {d.status}</div>
+              {d.health_score !== undefined && (
+                <div>健康度: <span className={d.health_score < 60 ? 'text-red-500 font-bold' : ''}>{d.health_score}</span>/100</div>
+              )}
             </div>
           ),
         });
@@ -177,6 +203,27 @@ export default function TopologyGraph({ data, onNodeClick, onEdgeClick }: Topolo
           onNodeClick(d as unknown as TopologyNode);
         }
       });
+
+    node.filter((d) => d.health_score !== undefined && d.health_score! < 60)
+      .insert('circle', 'circle')
+      .attr('r', (d) => nodeSize(d.qps) + 6)
+      .attr('fill', 'none')
+      .attr('stroke', '#ef4444')
+      .attr('stroke-width', 2)
+      .attr('class', 'health-pulse-ring');
+
+    node.append('text')
+      .text((d) => d.health_score !== undefined ? `${d.health_score}` : '')
+      .attr('text-anchor', 'middle')
+      .attr('dy', '0.35em')
+      .attr('font-size', '13px')
+      .attr('font-weight', 'bold')
+      .attr('fill', (d) => {
+        if (d.health_score !== undefined && d.health_score < 60) return '#fff';
+        if (d.health_score !== undefined && d.health_score < 80) return '#fff';
+        return '#fff';
+      })
+      .style('pointer-events', 'none');
 
     node.append('text')
       .text((d) => d.name)
@@ -199,7 +246,7 @@ export default function TopologyGraph({ data, onNodeClick, onEdgeClick }: Topolo
     return () => {
       simulation.stop();
     };
-  }, [data, onNodeClick, onEdgeClick]);
+  }, [data, healthScores, onNodeClick, onEdgeClick]);
 
   return (
     <div ref={containerRef} className="relative w-full">

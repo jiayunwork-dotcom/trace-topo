@@ -70,6 +70,48 @@ body {
   animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+@keyframes health-critical-pulse {
+  0% {
+    fill-opacity: 0.8;
+    stroke: #ef4444;
+    stroke-width: 2;
+  }
+  50% {
+    fill-opacity: 1;
+    stroke: #dc2626;
+    stroke-width: 4;
+  }
+  100% {
+    fill-opacity: 0.8;
+    stroke: #ef4444;
+    stroke-width: 2;
+  }
+}
+
+.health-critical {
+  animation: health-critical-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes health-pulse-ring-anim {
+  0% {
+    r: inherit;
+    stroke-opacity: 0.8;
+    stroke-width: 2;
+  }
+  50% {
+    stroke-opacity: 0.4;
+    stroke-width: 4;
+  }
+  100% {
+    stroke-opacity: 0.8;
+    stroke-width: 2;
+  }
+}
+
+.health-pulse-ring {
+  animation: health-pulse-ring-anim 1.5s ease-in-out infinite;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

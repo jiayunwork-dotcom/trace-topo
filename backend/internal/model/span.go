@@ -117,6 +117,80 @@ type SamplingConfig struct {
 	TailAnomalyRate float64 `json:"tail_anomaly_rate"`
 }
 
+type HealthScore struct {
+	ServiceName           string    `json:"service_name"`
+	Score                 int       `json:"score"`
+	ErrorRate             float64   `json:"error_rate"`
+	ErrorRateScore        int       `json:"error_rate_score"`
+	P99Deviation          float64   `json:"p99_deviation"`
+	P99DeviationScore     int       `json:"p99_deviation_score"`
+	UpstreamSuccessRate   float64   `json:"upstream_success_rate"`
+	UpstreamSuccessScore  int       `json:"upstream_success_rate_score"`
+	P99Baseline           float64   `json:"p99_baseline"`
+	CalculatedAt          time.Time `json:"calculated_at"`
+}
+
+type AlertRule struct {
+	ID               int       `json:"id"`
+	Name             string    `json:"name"`
+	Description      string    `json:"description,omitempty"`
+	Type             string    `json:"type"`
+	Enabled          bool      `json:"enabled"`
+	Severity         string    `json:"severity"`
+	ServiceName      string    `json:"service_name,omitempty"`
+	Metric           string    `json:"metric"`
+	Operator         string    `json:"operator"`
+	Threshold        float64   `json:"threshold"`
+	DurationSeconds  int       `json:"duration_seconds"`
+	SpikeWindowMin   int       `json:"spike_window_minutes"`
+	SpikeMultiplier  float64   `json:"spike_multiplier"`
+	TopologyCheck    string    `json:"topology_check,omitempty"`
+	CooldownSeconds  int       `json:"cooldown_seconds"`
+	LastTriggeredAt  *time.Time `json:"last_triggered_at,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type AlertEvent struct {
+	ID          int        `json:"id"`
+	RuleID      int        `json:"rule_id"`
+	RuleName    string     `json:"rule_name"`
+	Severity    string     `json:"severity"`
+	ServiceName string     `json:"service_name,omitempty"`
+	MetricValue float64    `json:"metric_value"`
+	Threshold   float64    `json:"threshold"`
+	Message     string     `json:"message,omitempty"`
+	TraceIDs    []string   `json:"trace_ids,omitempty"`
+	FiredAt     time.Time  `json:"fired_at"`
+	ResolvedAt  *time.Time `json:"resolved_at,omitempty"`
+	Acknowledged bool      `json:"acknowledged"`
+}
+
+type TraceComparison struct {
+	TraceA       *TraceSummary     `json:"trace_a"`
+	TraceB       *TraceSummary     `json:"trace_b"`
+	SpanDiffs    []*SpanDiff       `json:"span_diffs"`
+	OnlyInA      []*SpanDiffEntry  `json:"only_in_a"`
+	OnlyInB      []*SpanDiffEntry  `json:"only_in_b"`
+	DurationDiff int64             `json:"duration_diff_ms"`
+}
+
+type SpanDiff struct {
+	ServiceName    string  `json:"service_name"`
+	OperationName  string  `json:"operation_name"`
+	DurationA      int64   `json:"duration_a_ms"`
+	DurationB      int64   `json:"duration_b_ms"`
+	DiffMs         int64   `json:"diff_ms"`
+	Slower         string  `json:"slower"`
+}
+
+type SpanDiffEntry struct {
+	ServiceName   string `json:"service_name"`
+	OperationName string `json:"operation_name"`
+	DurationMs    int64  `json:"duration_ms"`
+	SpanID        string `json:"span_id"`
+}
+
 func (s *Span) MarshalJSON() ([]byte, error) {
 	type Alias Span
 	return json.Marshal(&struct {

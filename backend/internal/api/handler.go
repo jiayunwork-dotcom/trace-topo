@@ -26,6 +26,16 @@ type Store interface {
 	GetRealtimeMetrics(ctx context.Context) (*model.Metrics, error)
 	GetSamplingConfig(ctx context.Context) (*model.SamplingConfig, error)
 	UpdateSamplingConfig(ctx context.Context, headRate, tailNormalRate, tailAnomalyRate float64) error
+	GetHealthScores(ctx context.Context, serviceName string, limit int) ([]*model.HealthScore, error)
+	GetAllLatestHealthScores(ctx context.Context) (map[string]*model.HealthScore, error)
+	GetAlertRules(ctx context.Context) ([]*model.AlertRule, error)
+	GetAlertRule(ctx context.Context, id int) (*model.AlertRule, error)
+	CreateAlertRule(ctx context.Context, rule *model.AlertRule) (*model.AlertRule, error)
+	UpdateAlertRule(ctx context.Context, rule *model.AlertRule) (*model.AlertRule, error)
+	DeleteAlertRule(ctx context.Context, id int) error
+	GetAlertEvents(ctx context.Context, ruleID *int, serviceName string, limit, offset int) ([]*model.AlertEvent, int64, error)
+	GetAlertEvent(ctx context.Context, id int) (*model.AlertEvent, error)
+	AcknowledgeAlertEvent(ctx context.Context, id int) error
 }
 
 type TopologyProvider interface {
@@ -44,19 +54,26 @@ type AssemblerStats interface {
 	GetOrphanCount() int
 }
 
+type HealthProvider interface {
+	GetHealthScore(serviceName string) *model.HealthScore
+	GetAllHealthScores() map[string]*model.HealthScore
+}
+
 type Handler struct {
 	store       Store
 	topology    TopologyProvider
 	sampling    SamplingConfigurer
 	assembler   AssemblerStats
+	health      HealthProvider
 }
 
-func NewHandler(store Store, topology TopologyProvider, sampling SamplingConfigurer, assembler AssemblerStats) *Handler {
+func NewHandler(store Store, topology TopologyProvider, sampling SamplingConfigurer, assembler AssemblerStats, health HealthProvider) *Handler {
 	return &Handler{
 		store:     store,
 		topology:  topology,
 		sampling:  sampling,
 		assembler: assembler,
+		health:    health,
 	}
 }
 
@@ -110,6 +127,26 @@ func (h *Handler) SetupRouter() *gin.Engine {
 			sampling.PUT("", h.UpdateSamplingConfig)
 			sampling.GET("/stats", h.GetSamplingStats)
 		}
+
+		health := api.Group("/health")
+		{
+			health.GET("/scores", h.GetAllHealthScores)
+			health.GET("/scores/:service", h.GetServiceHealthScores)
+		}
+
+		alerts := api.Group("/alerts")
+		{
+			alerts.GET("/rules", h.GetAlertRules)
+			alerts.GET("/rules/:id", h.GetAlertRule)
+			alerts.POST("/rules", h.CreateAlertRule)
+			alerts.PUT("/rules/:id", h.UpdateAlertRule)
+			alerts.DELETE("/rules/:id", h.DeleteAlertRule)
+			alerts.GET("/events", h.GetAlertEvents)
+			alerts.GET("/events/:id", h.GetAlertEvent)
+			alerts.PUT("/events/:id/acknowledge", h.AcknowledgeAlertEvent)
+		}
+
+		api.POST("/traces/compare", h.CompareTraces)
 
 		api.GET("/internal/stats", h.GetInternalStats)
 	}
@@ -475,4 +512,328 @@ func (h *Handler) GetInternalStats(c *gin.Context) {
 		"pending_traces": h.assembler.GetPendingTraceCount(),
 		"orphan_spans":   h.assembler.GetOrphanCount(),
 	})
+}
+
+func (h *Handler) GetAllHealthScores(c *gin.Context) {
+	scores := h.health.GetAllHealthScores()
+	c.JSON(http.StatusOK, gin.H{
+		"data": scores,
+	})
+}
+
+func (h *Handler) GetServiceHealthScores(c *gin.Context) {
+	serviceName := c.Param("service")
+	limit := 100
+	if l := c.Query("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil {
+			limit = v
+		}
+	}
+
+	scores, err := h.store.GetHealthScores(c.Request.Context(), serviceName, limit)
+	if err != nil {
+		logrus.Errorf("Get health scores error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": scores,
+	})
+}
+
+func (h *Handler) GetAlertRules(c *gin.Context) {
+	rules, err := h.store.GetAlertRules(c.Request.Context())
+	if err != nil {
+		logrus.Errorf("Get alert rules error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"data": rules,
+	})
+}
+
+func (h *Handler) GetAlertRule(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid rule id"})
+		return
+	}
+
+	rule, err := h.store.GetAlertRule(c.Request.Context(), id)
+	if err != nil {
+		logrus.Errorf("Get alert rule error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, rule)
+}
+
+func (h *Handler) CreateAlertRule(c *gin.Context) {
+	var rule model.AlertRule
+	if err := c.ShouldBindJSON(&rule); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	created, err := h.store.CreateAlertRule(c.Request.Context(), &rule)
+	if err != nil {
+		logrus.Errorf("Create alert rule error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, created)
+}
+
+func (h *Handler) UpdateAlertRule(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid rule id"})
+		return
+	}
+
+	var rule model.AlertRule
+	if err := c.ShouldBindJSON(&rule); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	rule.ID = id
+
+	updated, err := h.store.UpdateAlertRule(c.Request.Context(), &rule)
+	if err != nil {
+		logrus.Errorf("Update alert rule error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, updated)
+}
+
+func (h *Handler) DeleteAlertRule(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid rule id"})
+		return
+	}
+
+	if err := h.store.DeleteAlertRule(c.Request.Context(), id); err != nil {
+		logrus.Errorf("Delete alert rule error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+func (h *Handler) GetAlertEvents(c *gin.Context) {
+	var ruleID *int
+	if rid := c.Query("rule_id"); rid != "" {
+		if v, err := strconv.Atoi(rid); err == nil {
+			ruleID = &v
+		}
+	}
+	serviceName := c.Query("service")
+	limit := 50
+	offset := 0
+	if l := c.Query("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil {
+			limit = v
+		}
+	}
+	if o := c.Query("offset"); o != "" {
+		if v, err := strconv.Atoi(o); err == nil {
+			offset = v
+		}
+	}
+
+	events, total, err := h.store.GetAlertEvents(c.Request.Context(), ruleID, serviceName, limit, offset)
+	if err != nil {
+		logrus.Errorf("Get alert events error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":   events,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
+}
+
+func (h *Handler) GetAlertEvent(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid event id"})
+		return
+	}
+
+	event, err := h.store.GetAlertEvent(c.Request.Context(), id)
+	if err != nil {
+		logrus.Errorf("Get alert event error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, event)
+}
+
+func (h *Handler) AcknowledgeAlertEvent(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid event id"})
+		return
+	}
+
+	if err := h.store.AcknowledgeAlertEvent(c.Request.Context(), id); err != nil {
+		logrus.Errorf("Acknowledge alert event error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "acknowledged"})
+}
+
+func (h *Handler) CompareTraces(c *gin.Context) {
+	var req struct {
+		TraceIDA string `json:"trace_a"`
+		TraceIDB string `json:"trace_b"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.TraceIDA == "" || req.TraceIDB == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "both trace_a and trace_b are required"})
+		return
+	}
+
+	summaryA, err := h.store.GetTraceSummary(c.Request.Context(), req.TraceIDA)
+	if err != nil {
+		logrus.Errorf("Get trace A summary error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get trace A"})
+		return
+	}
+
+	summaryB, err := h.store.GetTraceSummary(c.Request.Context(), req.TraceIDB)
+	if err != nil {
+		logrus.Errorf("Get trace B summary error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get trace B"})
+		return
+	}
+
+	spansA, err := h.store.GetTraceSpans(c.Request.Context(), req.TraceIDA, summaryA.StartTime.Add(-1*time.Minute), summaryA.EndTime.Add(1*time.Minute))
+	if err != nil {
+		logrus.Errorf("Get trace A spans error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get trace A spans"})
+		return
+	}
+
+	spansB, err := h.store.GetTraceSpans(c.Request.Context(), req.TraceIDB, summaryB.StartTime.Add(-1*time.Minute), summaryB.EndTime.Add(1*time.Minute))
+	if err != nil {
+		logrus.Errorf("Get trace B spans error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get trace B spans"})
+		return
+	}
+
+	comparison := buildTraceComparison(summaryA, summaryB, spansA, spansB)
+	c.JSON(http.StatusOK, comparison)
+}
+
+func buildTraceComparison(summaryA, summaryB *model.TraceSummary, spansA, spansB []*model.Span) *model.TraceComparison {
+	type spanKey struct {
+		service   string
+		operation string
+	}
+
+	durationsA := make(map[spanKey][]int64)
+	durationsB := make(map[spanKey][]int64)
+	spanIDsA := make(map[spanKey]string)
+	spanIDsB := make(map[spanKey]string)
+
+	for _, s := range spansA {
+		key := spanKey{service: s.ServiceName, operation: s.OperationName}
+		durationsA[key] = append(durationsA[key], s.DurationMs)
+		if _, exists := spanIDsA[key]; !exists {
+			spanIDsA[key] = s.SpanID
+		}
+	}
+
+	for _, s := range spansB {
+		key := spanKey{service: s.ServiceName, operation: s.OperationName}
+		durationsB[key] = append(durationsB[key], s.DurationMs)
+		if _, exists := spanIDsB[key]; !exists {
+			spanIDsB[key] = s.SpanID
+		}
+	}
+
+	avgDuration := func(durations []int64) int64 {
+		if len(durations) == 0 {
+			return 0
+		}
+		var sum int64
+		for _, d := range durations {
+			sum += d
+		}
+		return sum / int64(len(durations))
+	}
+
+	allKeys := make(map[spanKey]bool)
+	for k := range durationsA {
+		allKeys[k] = true
+	}
+	for k := range durationsB {
+		allKeys[k] = true
+	}
+
+	var spanDiffs []*model.SpanDiff
+	var onlyInA []*model.SpanDiffEntry
+	var onlyInB []*model.SpanDiffEntry
+
+	for key := range allKeys {
+		durA := avgDuration(durationsA[key])
+		durB := avgDuration(durationsB[key])
+
+		_, inA := durationsA[key]
+		_, inB := durationsB[key]
+
+		if inA && inB {
+			diff := durB - durA
+			slower := "same"
+			if diff > 0 {
+				slower = "b"
+			} else if diff < 0 {
+				slower = "a"
+			}
+			spanDiffs = append(spanDiffs, &model.SpanDiff{
+				ServiceName:   key.service,
+				OperationName: key.operation,
+				DurationA:     durA,
+				DurationB:     durB,
+				DiffMs:        diff,
+				Slower:        slower,
+			})
+		} else if inA {
+			onlyInA = append(onlyInA, &model.SpanDiffEntry{
+				ServiceName:   key.service,
+				OperationName: key.operation,
+				DurationMs:    durA,
+				SpanID:        spanIDsA[key],
+			})
+		} else {
+			onlyInB = append(onlyInB, &model.SpanDiffEntry{
+				ServiceName:   key.service,
+				OperationName: key.operation,
+				DurationMs:    durB,
+				SpanID:        spanIDsB[key],
+			})
+		}
+	}
+
+	return &model.TraceComparison{
+		TraceA:       summaryA,
+		TraceB:       summaryB,
+		SpanDiffs:    spanDiffs,
+		OnlyInA:      onlyInA,
+		OnlyInB:      onlyInB,
+		DurationDiff: summaryB.TotalDuration - summaryA.TotalDuration,
+	}
 }

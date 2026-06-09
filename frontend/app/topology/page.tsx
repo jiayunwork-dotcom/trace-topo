@@ -4,9 +4,9 @@ import { useEffect, useState } from 'react';
 import { Activity, ArrowRight, Clock, XCircle } from 'lucide-react';
 import TopologyGraph from '@/components/TopologyGraph';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { topologyApi } from '@/lib/api';
+import { topologyApi, healthApi } from '@/lib/api';
 import { formatDuration, formatNumber, formatPercent } from '@/lib/utils';
-import type { TopologyGraph as TopologyGraphType, TopologyNode, ServiceDetail } from '@/types';
+import type { TopologyGraph as TopologyGraphType, TopologyNode, ServiceDetail, HealthScore } from '@/types';
 
 export default function TopologyPage() {
   const [topology, setTopology] = useState<TopologyGraphType | null>(null);
@@ -14,11 +14,16 @@ export default function TopologyPage() {
   const [serviceDetail, setServiceDetail] = useState<ServiceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [windowSize, setWindowSize] = useState<'5m' | '1h' | '24h'>('5m');
+  const [healthScores, setHealthScores] = useState<Record<string, HealthScore>>({});
 
   const loadTopology = async () => {
     try {
-      const res = await topologyApi.getGraph(windowSize);
-      setTopology(res.data);
+      const [topoRes, healthRes] = await Promise.all([
+        topologyApi.getGraph(windowSize),
+        healthApi.getAllScores(),
+      ]);
+      setTopology(topoRes.data);
+      setHealthScores(healthRes.data.data || {});
     } catch (error) {
       console.error('Failed to load topology:', error);
     } finally {
@@ -85,7 +90,7 @@ export default function TopologyPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-4">
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 mb-4">
         <Card>
           <CardContent className="p-4">
             <div className="flex items-center space-x-2">
@@ -118,6 +123,14 @@ export default function TopologyPage() {
             </div>
           </CardContent>
         </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center space-x-2">
+              <div className="w-3 h-3 rounded-full bg-red-500 animate-pulse"></div>
+              <span className="text-sm text-gray-600 dark:text-gray-400">健康度 &lt;60</span>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
@@ -125,6 +138,7 @@ export default function TopologyPage() {
           {topology && (
             <TopologyGraph
               data={topology}
+              healthScores={healthScores}
               onNodeClick={handleNodeClick}
             />
           )}

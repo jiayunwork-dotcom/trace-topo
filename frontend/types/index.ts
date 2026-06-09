@@ -161,3 +161,77 @@ export const statusLabelMap: Record<string, string> = {
   error: '错误',
   inactive: '不活跃',
 };
+
+export interface HealthScore {
+  service_name: string;
+  score: number;
+  error_rate: number;
+  error_rate_score: number;
+  p99_deviation: number;
+  p99_deviation_score: number;
+  upstream_success_rate: number;
+  upstream_success_rate_score: number;
+  p99_baseline: number;
+  calculated_at: string;
+}
+
+export interface AlertRule {
+  id: number;
+  name: string;
+  description?: string;
+  type: 'threshold' | 'spike' | 'topology';
+  enabled: boolean;
+  severity: 'info' | 'warning' | 'critical';
+  service_name?: string;
+  metric: string;
+  operator: string;
+  threshold: number;
+  duration_seconds: number;
+  spike_window_minutes: number;
+  spike_multiplier: number;
+  topology_check?: string;
+  cooldown_seconds: number;
+  last_triggered_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertEvent {
+  id: number;
+  rule_id: number;
+  rule_name: string;
+  severity: string;
+  service_name?: string;
+  metric_value: number;
+  threshold: number;
+  message?: string;
+  trace_ids?: string[];
+  fired_at: string;
+  resolved_at?: string;
+  acknowledged: boolean;
+}
+
+export interface SpanDiff {
+  service_name: string;
+  operation_name: string;
+  duration_a_ms: number;
+  duration_b_ms: number;
+  diff_ms: number;
+  slower: 'a' | 'b' | 'same';
+}
+
+export interface SpanDiffEntry {
+  service_name: string;
+  operation_name: string;
+  duration_ms: number;
+  span_id: string;
+}
+
+export interface TraceComparison {
+  trace_a: TraceSummary;
+  trace_b: TraceSummary;
+  span_diffs: SpanDiff[];
+  only_in_a: SpanDiffEntry[];
+  only_in_b: SpanDiffEntry[];
+  duration_diff_ms: number;
+}

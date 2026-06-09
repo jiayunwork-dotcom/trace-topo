@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import Link from 'next/link';
-import { Activity, Network, Search, BarChart3 } from 'lucide-react';
+import { Activity, Network, Search, BarChart3, Bell, ArrowLeftRight } from 'lucide-react';
 
 export const metadata: Metadata = {
   title: 'Trace Topology - 分布式追踪平台',
@@ -17,6 +17,8 @@ export default function RootLayout({
     { href: '/dashboard', label: '仪表盘', icon: BarChart3 },
     { href: '/topology', label: '服务拓扑', icon: Network },
     { href: '/traces', label: 'Trace搜索', icon: Search },
+    { href: '/alerts', label: '告警管理', icon: Bell },
+    { href: '/compare', label: 'Trace对比', icon: ArrowLeftRight },
   ];
 
   return (

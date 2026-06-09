@@ -153,3 +153,66 @@ CREATE TABLE IF NOT EXISTS sampling_config (
 INSERT INTO sampling_config (head_sampling_rate, tail_normal_rate, tail_anomaly_rate)
 VALUES (1.0, 0.1, 1.0)
 ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS service_health_scores (
+    id SERIAL PRIMARY KEY,
+    service_name TEXT NOT NULL,
+    score INTEGER NOT NULL CHECK (score >= 0 AND score <= 100),
+    error_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    error_rate_score INTEGER NOT NULL DEFAULT 100,
+    p99_deviation DOUBLE PRECISION NOT NULL DEFAULT 0,
+    p99_deviation_score INTEGER NOT NULL DEFAULT 100,
+    upstream_success_rate DOUBLE PRECISION NOT NULL DEFAULT 1,
+    upstream_success_rate_score INTEGER NOT NULL DEFAULT 100,
+    p99_baseline DOUBLE PRECISION NOT NULL DEFAULT 0,
+    calculated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(service_name, calculated_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_scores_service ON service_health_scores(service_name, calculated_at DESC);
+
+CREATE TABLE IF NOT EXISTS service_health_baselines (
+    service_name TEXT PRIMARY KEY,
+    p99_baseline DOUBLE PRECISION NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS alert_rules (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    type TEXT NOT NULL CHECK (type IN ('threshold', 'spike', 'topology')),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    severity TEXT NOT NULL DEFAULT 'warning' CHECK (severity IN ('info', 'warning', 'critical')),
+    service_name TEXT,
+    metric TEXT NOT NULL,
+    operator TEXT NOT NULL DEFAULT '>' CHECK (operator IN ('>', '>=', '<', '<=', '==', '!=')),
+    threshold DOUBLE PRECISION NOT NULL,
+    duration_seconds INTEGER NOT NULL DEFAULT 0,
+    spike_window_minutes INTEGER NOT NULL DEFAULT 60,
+    spike_multiplier DOUBLE PRECISION NOT NULL DEFAULT 2.0,
+    topology_check TEXT DEFAULT 'all_downstream_inactive',
+    cooldown_seconds INTEGER NOT NULL DEFAULT 300,
+    last_triggered_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS alert_events (
+    id SERIAL PRIMARY KEY,
+    rule_id INTEGER NOT NULL REFERENCES alert_rules(id) ON DELETE CASCADE,
+    rule_name TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    service_name TEXT,
+    metric_value DOUBLE PRECISION NOT NULL,
+    threshold DOUBLE PRECISION NOT NULL,
+    message TEXT,
+    trace_ids TEXT[],
+    fired_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP,
+    acknowledged BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_events_rule ON alert_events(rule_id, fired_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alert_events_fired ON alert_events(fired_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alert_events_service ON alert_events(service_name, fired_at DESC);

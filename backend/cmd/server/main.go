@@ -8,10 +8,12 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"trace-topo/internal/alert"
 	"trace-topo/internal/anomaly"
 	grpcserver "trace-topo/internal/grpc"
 	"trace-topo/internal/api"
 	"trace-topo/internal/config"
+	"trace-topo/internal/health"
 	"trace-topo/internal/sampling"
 	"trace-topo/internal/storage"
 	"trace-topo/internal/topology"
@@ -47,12 +49,18 @@ func main() {
 
 	topologyDiscoverer.Start(ctx)
 
+	healthScorer := health.NewScorer(store, topologyDiscoverer)
+	healthScorer.Start(ctx)
+
+	alertEngine := alert.NewEngine(store, topologyDiscoverer)
+	alertEngine.Start(ctx)
+
 	grpcServer := grpcserver.NewTraceReceiverServer(assembler)
 	if err := grpcServer.Start(ctx); err != nil {
 		logrus.Fatalf("Failed to start gRPC server: %v", err)
 	}
 
-	handler := api.NewHandler(store, topologyDiscoverer, samplingEngine, assembler)
+	handler := api.NewHandler(store, topologyDiscoverer, samplingEngine, assembler, healthScorer)
 	if err := handler.Start(ctx); err != nil {
 		logrus.Fatalf("Failed to start API server: %v", err)
 	}

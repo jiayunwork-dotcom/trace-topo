@@ -741,3 +741,428 @@ func (s *PostgresStore) UpdateSamplingConfig(ctx context.Context, headRate, tail
 	`, headRate, tailNormalRate, tailAnomalyRate)
 	return err
 }
+
+func (s *PostgresStore) GetServiceErrorRate(ctx context.Context, serviceName string, window time.Duration) (float64, error) {
+	var errorRate float64
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(
+			SUM(CASE WHEN status_code != 0 THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0),
+			0
+		) as error_rate
+		FROM trace_summaries
+		WHERE root_service = $1 AND start_time > NOW() - $2::interval
+	`, serviceName, window.String()).Scan(&errorRate)
+	if err != nil {
+		return 0, err
+	}
+	return errorRate, nil
+}
+
+func (s *PostgresStore) GetServiceP99Latency(ctx context.Context, serviceName string, window time.Duration) (float64, error) {
+	var p99 float64
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(percentile_cont(0.99) WITHIN GROUP (ORDER BY total_duration_ms), 0)
+		FROM trace_summaries
+		WHERE root_service = $1 AND start_time > NOW() - $2::interval
+	`, serviceName, window.String()).Scan(&p99)
+	if err != nil {
+		return 0, err
+	}
+	return p99, nil
+}
+
+func (s *PostgresStore) GetServiceUpstreamSuccessRate(ctx context.Context, serviceName string, window time.Duration) (float64, error) {
+	var successRate float64
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(
+			SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0),
+			1.0
+		)
+		FROM trace_summaries
+		WHERE root_service = $1 AND start_time > NOW() - $2::interval
+	`, serviceName, window.String()).Scan(&successRate)
+	if err != nil {
+		return 1.0, err
+	}
+	return successRate, nil
+}
+
+func (s *PostgresStore) GetServiceAvgMetric(ctx context.Context, serviceName, metric string, window time.Duration) (float64, error) {
+	var value float64
+	var err error
+
+	switch metric {
+	case "error_rate":
+		value, err = s.GetServiceErrorRate(ctx, serviceName, window)
+	case "p99_latency":
+		value, err = s.GetServiceP99Latency(ctx, serviceName, window)
+	case "avg_latency":
+		err = s.pool.QueryRow(ctx, `
+			SELECT COALESCE(AVG(total_duration_ms), 0)
+			FROM trace_summaries
+			WHERE root_service = $1 AND start_time > NOW() - $2::interval
+		`, serviceName, window.String()).Scan(&value)
+	default:
+		err = s.pool.QueryRow(ctx, `
+			SELECT COALESCE(AVG(total_duration_ms), 0)
+			FROM trace_summaries
+			WHERE root_service = $1 AND start_time > NOW() - $2::interval
+		`, serviceName, window.String()).Scan(&value)
+	}
+
+	return value, err
+}
+
+func (s *PostgresStore) GetRecentTraceIDs(ctx context.Context, serviceName string, window time.Duration) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT trace_id FROM trace_summaries
+		WHERE root_service = $1 AND start_time > NOW() - $2::interval
+		ORDER BY start_time DESC
+		LIMIT 10
+	`, serviceName, window.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *PostgresStore) GetHealthBaseline(ctx context.Context, serviceName string) (float64, error) {
+	var baseline float64
+	err := s.pool.QueryRow(ctx, `
+		SELECT p99_baseline FROM service_health_baselines
+		WHERE service_name = $1
+	`, serviceName).Scan(&baseline)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return baseline, nil
+}
+
+func (s *PostgresStore) UpsertHealthBaseline(ctx context.Context, serviceName string, baseline float64) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO service_health_baselines (service_name, p99_baseline, updated_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (service_name) DO UPDATE
+		SET p99_baseline = EXCLUDED.p99_baseline, updated_at = NOW()
+	`, serviceName, baseline)
+	return err
+}
+
+func (s *PostgresStore) WriteHealthScore(ctx context.Context, score *model.HealthScore) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO service_health_scores (
+			service_name, score, error_rate, error_rate_score,
+			p99_deviation, p99_deviation_score,
+			upstream_success_rate, upstream_success_rate_score,
+			p99_baseline, calculated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (service_name, calculated_at) DO NOTHING
+	`, score.ServiceName, score.Score,
+		score.ErrorRate, score.ErrorRateScore,
+		score.P99Deviation, score.P99DeviationScore,
+		score.UpstreamSuccessRate, score.UpstreamSuccessScore,
+		score.P99Baseline, score.CalculatedAt)
+	return err
+}
+
+func (s *PostgresStore) GetHealthScores(ctx context.Context, serviceName string, limit int) ([]*model.HealthScore, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT service_name, score, error_rate, error_rate_score,
+			p99_deviation, p99_deviation_score,
+			upstream_success_rate, upstream_success_rate_score,
+			p99_baseline, calculated_at
+		FROM service_health_scores
+		WHERE service_name = $1
+		ORDER BY calculated_at DESC
+		LIMIT $2
+	`, serviceName, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var scores []*model.HealthScore
+	for rows.Next() {
+		var hs model.HealthScore
+		err := rows.Scan(
+			&hs.ServiceName, &hs.Score, &hs.ErrorRate, &hs.ErrorRateScore,
+			&hs.P99Deviation, &hs.P99DeviationScore,
+			&hs.UpstreamSuccessRate, &hs.UpstreamSuccessScore,
+			&hs.P99Baseline, &hs.CalculatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		scores = append(scores, &hs)
+	}
+	return scores, rows.Err()
+}
+
+func (s *PostgresStore) GetAllLatestHealthScores(ctx context.Context) (map[string]*model.HealthScore, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT ON (service_name)
+			service_name, score, error_rate, error_rate_score,
+			p99_deviation, p99_deviation_score,
+			upstream_success_rate, upstream_success_rate_score,
+			p99_baseline, calculated_at
+		FROM service_health_scores
+		ORDER BY service_name, calculated_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]*model.HealthScore)
+	for rows.Next() {
+		var hs model.HealthScore
+		err := rows.Scan(
+			&hs.ServiceName, &hs.Score, &hs.ErrorRate, &hs.ErrorRateScore,
+			&hs.P99Deviation, &hs.P99DeviationScore,
+			&hs.UpstreamSuccessRate, &hs.UpstreamSuccessScore,
+			&hs.P99Baseline, &hs.CalculatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		result[hs.ServiceName] = &hs
+	}
+	return result, rows.Err()
+}
+
+func (s *PostgresStore) CleanupOldHealthScores(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, `
+		DELETE FROM service_health_scores
+		WHERE calculated_at < NOW() - INTERVAL '7 days'
+	`)
+	return err
+}
+
+func (s *PostgresStore) GetAlertRules(ctx context.Context) ([]*model.AlertRule, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, description, type, enabled, severity,
+			service_name, metric, operator, threshold,
+			duration_seconds, spike_window_minutes, spike_multiplier,
+			topology_check, cooldown_seconds, last_triggered_at,
+			created_at, updated_at
+		FROM alert_rules
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var rules []*model.AlertRule
+	for rows.Next() {
+		var r model.AlertRule
+		err := rows.Scan(
+			&r.ID, &r.Name, &r.Description, &r.Type, &r.Enabled, &r.Severity,
+			&r.ServiceName, &r.Metric, &r.Operator, &r.Threshold,
+			&r.DurationSeconds, &r.SpikeWindowMin, &r.SpikeMultiplier,
+			&r.TopologyCheck, &r.CooldownSeconds, &r.LastTriggeredAt,
+			&r.CreatedAt, &r.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		rules = append(rules, &r)
+	}
+	return rules, rows.Err()
+}
+
+func (s *PostgresStore) GetAlertRule(ctx context.Context, id int) (*model.AlertRule, error) {
+	var r model.AlertRule
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, name, description, type, enabled, severity,
+			service_name, metric, operator, threshold,
+			duration_seconds, spike_window_minutes, spike_multiplier,
+			topology_check, cooldown_seconds, last_triggered_at,
+			created_at, updated_at
+		FROM alert_rules
+		WHERE id = $1
+	`, id).Scan(
+		&r.ID, &r.Name, &r.Description, &r.Type, &r.Enabled, &r.Severity,
+		&r.ServiceName, &r.Metric, &r.Operator, &r.Threshold,
+		&r.DurationSeconds, &r.SpikeWindowMin, &r.SpikeMultiplier,
+		&r.TopologyCheck, &r.CooldownSeconds, &r.LastTriggeredAt,
+		&r.CreatedAt, &r.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+func (s *PostgresStore) CreateAlertRule(ctx context.Context, rule *model.AlertRule) (*model.AlertRule, error) {
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO alert_rules (
+			name, description, type, enabled, severity,
+			service_name, metric, operator, threshold,
+			duration_seconds, spike_window_minutes, spike_multiplier,
+			topology_check, cooldown_seconds
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		RETURNING id, created_at, updated_at
+	`,
+		rule.Name, rule.Description, rule.Type, rule.Enabled, rule.Severity,
+		rule.ServiceName, rule.Metric, rule.Operator, rule.Threshold,
+		rule.DurationSeconds, rule.SpikeWindowMin, rule.SpikeMultiplier,
+		rule.TopologyCheck, rule.CooldownSeconds,
+	).Scan(&rule.ID, &rule.CreatedAt, &rule.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return rule, nil
+}
+
+func (s *PostgresStore) UpdateAlertRule(ctx context.Context, rule *model.AlertRule) (*model.AlertRule, error) {
+	err := s.pool.QueryRow(ctx, `
+		UPDATE alert_rules SET
+			name = $2, description = $3, type = $4, enabled = $5, severity = $6,
+			service_name = $7, metric = $8, operator = $9, threshold = $10,
+			duration_seconds = $11, spike_window_minutes = $12, spike_multiplier = $13,
+			topology_check = $14, cooldown_seconds = $15, updated_at = NOW()
+		WHERE id = $1
+		RETURNING updated_at
+	`,
+		rule.ID,
+		rule.Name, rule.Description, rule.Type, rule.Enabled, rule.Severity,
+		rule.ServiceName, rule.Metric, rule.Operator, rule.Threshold,
+		rule.DurationSeconds, rule.SpikeWindowMin, rule.SpikeMultiplier,
+		rule.TopologyCheck, rule.CooldownSeconds,
+	).Scan(&rule.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return rule, nil
+}
+
+func (s *PostgresStore) DeleteAlertRule(ctx context.Context, id int) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM alert_rules WHERE id = $1`, id)
+	return err
+}
+
+func (s *PostgresStore) CreateAlertEvent(ctx context.Context, event *model.AlertEvent) (*model.AlertEvent, error) {
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO alert_events (
+			rule_id, rule_name, severity, service_name,
+			metric_value, threshold, message, trace_ids, fired_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id
+	`,
+		event.RuleID, event.RuleName, event.Severity, event.ServiceName,
+		event.MetricValue, event.Threshold, event.Message, event.TraceIDs, event.FiredAt,
+	).Scan(&event.ID)
+	if err != nil {
+		return nil, err
+	}
+	return event, nil
+}
+
+func (s *PostgresStore) GetAlertEvents(ctx context.Context, ruleID *int, serviceName string, limit, offset int) ([]*model.AlertEvent, int64, error) {
+	var args []interface{}
+	argIdx := 1
+
+	where := "WHERE 1=1"
+	if ruleID != nil {
+		where += fmt.Sprintf(" AND rule_id = $%d", argIdx)
+		args = append(args, *ruleID)
+		argIdx++
+	}
+	if serviceName != "" {
+		where += fmt.Sprintf(" AND service_name = $%d", argIdx)
+		args = append(args, serviceName)
+		argIdx++
+	}
+
+	var total int64
+	countQuery := "SELECT COUNT(*) FROM alert_events " + where
+	if err := s.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	if limit <= 0 {
+		limit = 50
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, rule_id, rule_name, severity, service_name,
+			metric_value, threshold, message, trace_ids,
+			fired_at, resolved_at, acknowledged
+		FROM alert_events %s
+		ORDER BY fired_at DESC
+		LIMIT $%d OFFSET $%d
+	`, where, argIdx, argIdx+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var events []*model.AlertEvent
+	for rows.Next() {
+		var ev model.AlertEvent
+		err := rows.Scan(
+			&ev.ID, &ev.RuleID, &ev.RuleName, &ev.Severity, &ev.ServiceName,
+			&ev.MetricValue, &ev.Threshold, &ev.Message, &ev.TraceIDs,
+			&ev.FiredAt, &ev.ResolvedAt, &ev.Acknowledged,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+		events = append(events, &ev)
+	}
+
+	return events, total, rows.Err()
+}
+
+func (s *PostgresStore) GetAlertEvent(ctx context.Context, id int) (*model.AlertEvent, error) {
+	var ev model.AlertEvent
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, rule_id, rule_name, severity, service_name,
+			metric_value, threshold, message, trace_ids,
+			fired_at, resolved_at, acknowledged
+		FROM alert_events
+		WHERE id = $1
+	`, id).Scan(
+		&ev.ID, &ev.RuleID, &ev.RuleName, &ev.Severity, &ev.ServiceName,
+		&ev.MetricValue, &ev.Threshold, &ev.Message, &ev.TraceIDs,
+		&ev.FiredAt, &ev.ResolvedAt, &ev.Acknowledged,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}
+
+func (s *PostgresStore) AcknowledgeAlertEvent(ctx context.Context, id int) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE alert_events SET acknowledged = TRUE WHERE id = $1
+	`, id)
+	return err
+}
+
+func (s *PostgresStore) UpdateRuleLastTriggered(ctx context.Context, ruleID int, triggeredAt time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE alert_rules SET last_triggered_at = $2 WHERE id = $1
+	`, ruleID, triggeredAt)
+	return err
+}

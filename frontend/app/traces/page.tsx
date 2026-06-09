@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, ArrowLeftRight } from 'lucide-react';
 import { format } from 'date-fns';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,7 @@ export default function TracesPage() {
   const [loading, setLoading] = useState(true);
   const [services, setServices] = useState<string[]>([]);
   const [operations, setOperations] = useState<string[]>([]);
+  const [selectedForCompare, setSelectedForCompare] = useState<string[]>([]);
 
   const [filters, setFilters] = useState<SearchRequest>({
     service_name: '',
@@ -179,7 +180,20 @@ export default function TracesPage() {
         <CardHeader>
           <CardTitle className="flex justify-between items-center">
             <span>搜索结果</span>
-            <span className="text-sm font-normal text-gray-500">共 {total} 条</span>
+            <div className="flex items-center space-x-4">
+              {selectedForCompare.length === 2 && (
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    window.location.href = `/compare?trace_a=${selectedForCompare[0]}&trace_b=${selectedForCompare[1]}`;
+                  }}
+                >
+                  <ArrowLeftRight className="h-4 w-4 mr-1" />
+                  对比选中
+                </Button>
+              )}
+              <span className="text-sm font-normal text-gray-500">共 {total} 条</span>
+            </div>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -193,6 +207,7 @@ export default function TracesPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-200 dark:border-gray-700">
+                      <th className="text-left py-3 px-4 font-medium text-gray-500 w-10">对比</th>
                       <th className="text-left py-3 px-4 font-medium text-gray-500">Trace ID</th>
                       <th className="text-left py-3 px-4 font-medium text-gray-500">根服务</th>
                       <th className="text-left py-3 px-4 font-medium text-gray-500">根操作</th>
@@ -206,10 +221,36 @@ export default function TracesPage() {
                     {traces.map((trace) => (
                       <tr
                         key={trace.trace_id}
-                        className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer"
-                        onClick={() => (window.location.href = `/trace/?id=${trace.trace_id}`)}
+                        className={`border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer ${
+                          selectedForCompare.includes(trace.trace_id) ? 'bg-blue-50 dark:bg-blue-900/20' : ''
+                        }`}
                       >
-                        <td className="py-3 px-4 font-mono text-xs text-blue-600">
+                        <td
+                          className="py-3 px-4"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedForCompare((prev) => {
+                              if (prev.includes(trace.trace_id)) {
+                                return prev.filter((id) => id !== trace.trace_id);
+                              }
+                              if (prev.length >= 2) {
+                                return [prev[1], trace.trace_id];
+                              }
+                              return [...prev, trace.trace_id];
+                            });
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedForCompare.includes(trace.trace_id)}
+                            onChange={() => {}}
+                            className="rounded border-gray-300"
+                          />
+                        </td>
+                        <td
+                          className="py-3 px-4 font-mono text-xs text-blue-600"
+                          onClick={() => (window.location.href = `/trace/?id=${trace.trace_id}`)}
+                        >
                           {trace.trace_id.slice(0, 16)}...
                         </td>
                         <td className="py-3 px-4">{trace.root_service}</td>
@@ -239,7 +280,7 @@ export default function TracesPage() {
                     ))}
                     {traces.length === 0 && (
                       <tr>
-                        <td colSpan={7} className="py-12 text-center text-gray-500">
+                        <td colSpan={8} className="py-12 text-center text-gray-500">
                           暂无Trace数据
                         </td>
                       </tr>
